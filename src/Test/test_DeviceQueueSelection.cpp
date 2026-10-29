@@ -2,6 +2,8 @@
 
 #include "Vulkan/Device.hpp"
 
+#include <vector>
+
 using wallpaper::vulkan::queue_selection::FindUnifiedFamily;
 
 TEST_SUITE_BEGIN("DeviceQueueSelection");
@@ -48,3 +50,51 @@ TEST_CASE("FindUnifiedFamily: both empty returns UINT32_MAX") {
 }
 
 TEST_SUITE_END();
+
+// CheckGPU asks the physical device for its queue families and extensions through the
+// instance dispatch table, so a table of local functions stands in for a driver.
+namespace
+{
+std::vector<VkQueueFamilyProperties> g_fake_families;
+
+void VKAPI_PTR fakeQueueFamilies(VkPhysicalDevice, uint32_t* count, VkQueueFamilyProperties* out) {
+    if (out == nullptr) {
+        *count = static_cast<uint32_t>(g_fake_families.size());
+        return;
+    }
+    for (uint32_t i = 0; i < *count && i < g_fake_families.size(); i++) out[i] = g_fake_families[i];
+}
+
+VkResult VKAPI_PTR fakeNoDeviceExtensions(VkPhysicalDevice, const char*, uint32_t* count,
+                                          VkExtensionProperties*) {
+    *count = 0;
+    return VK_SUCCESS;
+}
+
+bool gpuAcceptedWithFamilies(std::vector<VkQueueFamilyProperties> families) {
+    g_fake_families = std::move(families);
+    vvk::InstanceDispatch dld {};
+    dld.vkGetPhysicalDeviceQueueFamilyProperties = fakeQueueFamilies;
+    dld.vkEnumerateDeviceExtensionProperties     = fakeNoDeviceExtensions;
+    vvk::PhysicalDevice gpu(reinterpret_cast<VkPhysicalDevice>(0x1), dld);
+    return wallpaper::vulkan::Device::CheckGPU(gpu, {}, VK_NULL_HANDLE);
+}
+} // namespace
+
+TEST_SUITE("Device::CheckGPU queue families") {
+    TEST_CASE("a GPU whose only queue family cannot do graphics is rejected") {
+        CHECK_FALSE(gpuAcceptedWithFamilies(
+            { { .queueFlags = VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, .queueCount = 1 } }));
+    }
+    TEST_CASE("a GPU with a graphics family is accepted, wherever in the list it sits") {
+        const VkQueueFamilyProperties graphics { .queueFlags = VK_QUEUE_GRAPHICS_BIT,
+                                                 .queueCount = 1 };
+        const VkQueueFamilyProperties transfer { .queueFlags = VK_QUEUE_TRANSFER_BIT,
+                                                 .queueCount = 1 };
+        CHECK(gpuAcceptedWithFamilies({ graphics }));
+        CHECK(gpuAcceptedWithFamilies({ transfer, graphics }));
+    }
+    TEST_CASE("a GPU with no queue families is rejected") {
+        CHECK_FALSE(gpuAcceptedWithFamilies({}));
+    }
+}

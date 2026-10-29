@@ -1043,3 +1043,44 @@ TEST_SUITE("genParticleEmittOp dispatch") {
         CHECK(ps.size() >= 1u);
     }
 }
+
+TEST_SUITE("genParticleEmittOp periodic emission") {
+    // Particles are kept alive and counted, so the count is the number emitted.
+    size_t emittedOver(const wpscene::Emitter& e, double seconds, double step) {
+        auto                        op = WPParticleParser::genParticleEmittOp(e);
+        std::vector<Particle>       ps;
+        std::vector<ParticleInitOp> inis;
+        inis.emplace_back([](Particle& p, double) {
+            p.lifetime = 1000.0f;
+        });
+        for (double t = 0; t < seconds; t += step) op(ps, inis, 100000u, step);
+        return ps.size();
+    }
+
+    wpscene::Emitter steadyEmitter() {
+        wpscene::Emitter e;
+        e.name        = "boxrandom";
+        e.id          = 1;
+        e.rate        = 100.0f;
+        e.distancemin = { 0, 0, 0 };
+        e.distancemax = { 0, 0, 0 };
+        e.directions  = { 1, 1, 1 };
+        e.origin      = { 0, 0, 0 };
+        return e;
+    }
+
+    TEST_CASE("a periodic emitter spends its delay phases without emitting") {
+        // Equal-length emit and quiet phases: over many cycles it emits for about half the
+        // time, whatever phase it starts in.
+        const auto steady = emittedOver(steadyEmitter(), 4.0, 0.01);
+        REQUIRE(steady > 100u);
+
+        auto periodic               = steadyEmitter();
+        periodic.minperiodicduration = periodic.maxperiodicduration = 0.1f;
+        periodic.minperiodicdelay = periodic.maxperiodicdelay = 0.1f;
+        const auto gated          = emittedOver(periodic, 4.0, 0.01);
+
+        CHECK(gated > 0u);
+        CHECK(gated < steady * 7 / 10);
+    }
+}

@@ -231,6 +231,55 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         CHECK(term->desc().passthrough_input_tex_index_b >= 0);
     }
 
+    TEST_CASE("an effect binding on another layer does not hide the same effect index here") {
+        Scene               scene;
+        auto                f = makeChain(scene, 306, { "a", "b" }, {});
+        ScenePropertyScript other;
+        other.id          = 4242;
+        other.attachment  = ScenePropertyScript::Attachment::Effect;
+        other.effectIndex = 0;
+        scene.propertyScripts.push_back(other);
+        scene.userPropEffectVisBindings["otherLayerProp"].push_back({ 4243, 1, true, "{}" });
+
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* first  = findPassForNode(*rgraph, f.effectNodes[0].get());
+        auto* last   = findPassForNode(*rgraph, f.layer->ResolvedLastOutput());
+        REQUIRE(first != nullptr);
+        REQUIRE(last != nullptr);
+        CHECK(first->desc().hideable == vulkan::HideableKind::None);
+        CHECK(last->desc().hideable == vulkan::HideableKind::None);
+    }
+
+    TEST_CASE("a material's file texture is imported and its render-target texture is temporary") {
+        Scene scene;
+        auto  f                                        = makeChain(scene, 307, { "a", "b" }, {});
+        f.effectNodes[0]->Mesh()->Material()->textures = { "models/file_tex", "_rt_default" };
+        auto rgraph                                    = wallpaper::sceneToRenderGraph(scene);
+
+        auto* pass = findPassForNode(*rgraph, f.effectNodes[0].get());
+        REQUIRE(pass != nullptr);
+        std::vector<rg::NodeID> passIds;
+        for (auto id : rgraph->topologicalOrder()) {
+            if (rgraph->getPass(id) == pass) passIds.push_back(id);
+        }
+        REQUIRE(passIds.size() == 1u);
+
+        bool       sawFile = false, sawTarget = false;
+        const auto reads = rgraph->getLastReadTexs(passIds);
+        REQUIRE(reads.size() == 1u);
+        for (auto* tex : reads[0]) {
+            if (tex->key() == "models/file_tex") {
+                sawFile = true;
+                CHECK(tex->type() == rg::TexNode::TexType::Imported);
+            } else if (tex->key() == "_rt_default") {
+                sawTarget = true;
+                CHECK(tex->type() == rg::TexNode::TexType::Temp);
+            }
+        }
+        CHECK(sawFile);
+        CHECK(sawTarget);
+    }
+
     TEST_CASE("a compose layer that does not draw its own image marks the base unwritten") {
         Scene scene;
         auto  f = makeChain(scene, 303, { "a", "b" }, { 0 });

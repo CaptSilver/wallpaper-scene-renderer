@@ -2,6 +2,7 @@
 #include <vulkan/vulkan.h>
 
 #include "Vulkan/Device.hpp"
+#include "Vulkan/Instance.hpp"
 
 using wallpaper::vulkan::Device;
 
@@ -37,5 +38,12 @@ TEST_SUITE("Device::d32_sampleable") {
         props.linearTilingFeatures  = 0;
         sampleable = (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
         CHECK(sampleable == true);
+    }
+}
+
+TEST_SUITE("Instance::offscreen") {
+    TEST_CASE("an instance without a surface is offscreen") {
+        wallpaper::vulkan::Instance inst;
+        CHECK(inst.offscreen());
     }
 }

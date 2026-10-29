@@ -12,6 +12,11 @@
 #include <filesystem>
 #include <string>
 
+#include <fontconfig/fontconfig.h>
+#include <unistd.h>
+
+#include "test_scratch.hpp"
+
 using wallpaper::ReadSystemFile;
 using wallpaper::ResolveSystemFontFallback;
 
@@ -36,6 +41,66 @@ bool IsSansFamily(const std::string& path) {
 bool HasAnyLinuxFont() {
     namespace fs = std::filesystem;
     return fs::exists("/usr/share/fonts");
+}
+
+// Replaces fontconfig's process-wide configuration with one that knows only the fonts in
+// `fontDir` (none when empty), so the resolver sees exactly what a test provides.
+class ScopedFontconfig {
+public:
+    explicit ScopedFontconfig(const std::filesystem::path& fontDir) {
+        m_previous = FcConfigReference(nullptr);
+        m_mine     = FcConfigCreate();
+        if (! fontDir.empty()) {
+            FcConfigAppFontAddDir(m_mine, reinterpret_cast<const FcChar8*>(fontDir.c_str()));
+        }
+        m_installed = FcConfigSetCurrent(m_mine) == FcTrue;
+    }
+    ~ScopedFontconfig() {
+        FcConfigSetCurrent(m_previous);
+        FcConfigDestroy(m_previous);
+        FcConfigDestroy(m_mine);
+    }
+    bool installed() const { return m_installed; }
+
+private:
+    FcConfig* m_previous { nullptr };
+    FcConfig* m_mine { nullptr };
+    bool      m_installed { false };
+};
+
+// A font file the host's fontconfig lists for `lang` (any language when null), found without
+// going through the resolver under test; empty when the host has none.
+std::string hostFontFile(const char* lang) {
+    FcPattern* pat = FcPatternCreate();
+    if (lang != nullptr) {
+        FcPatternAddString(pat, FC_LANG, reinterpret_cast<const FcChar8*>(lang));
+    }
+    FcObjectSet* props = FcObjectSetBuild(FC_FILE, nullptr);
+    FcFontSet*   fonts = FcFontList(nullptr, pat, props);
+    std::string  file;
+    if (fonts != nullptr) {
+        for (int i = 0; i < fonts->nfont && file.empty(); i++) {
+            FcChar8* path = nullptr;
+            if (FcPatternGetString(fonts->fonts[i], FC_FILE, 0, &path) == FcResultMatch &&
+                path != nullptr && std::filesystem::exists(reinterpret_cast<const char*>(path))) {
+                file = reinterpret_cast<const char*>(path);
+            }
+        }
+        FcFontSetDestroy(fonts);
+    }
+    FcObjectSetDestroy(props);
+    FcPatternDestroy(pat);
+    return file;
+}
+
+// A scratch directory holding a link to `font`; returns the link's path.
+std::filesystem::path linkFontIntoScratch(const std::string& tag, const std::string& font) {
+    const auto dir = std::filesystem::path(wallpaper::test::ScratchDir(tag, ::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto link = dir / std::filesystem::path(font).filename();
+    std::filesystem::create_symlink(font, link);
+    return link;
 }
 
 } // namespace
@@ -157,5 +222,57 @@ TEST_SUITE("SystemFontFallback") {
         const bool otf_magic  = data.substr(0, 4) == "OTTO";
         const bool true_magic = data.substr(0, 4) == "true";
         CHECK((ttf_magic || otf_magic || true_magic));
+    }
+
+    TEST_CASE("the font fontconfig picks is returned when it exists") {
+        const auto known = hostFontFile(nullptr);
+        if (known.empty()) return;
+
+        const auto link = linkFontIntoScratch("fc_only_font", known);
+        {
+            ScopedFontconfig fc(link.parent_path());
+            REQUIRE(fc.installed());
+            CHECK(ResolveSystemFontFallback("systemfont_arial") == link.string());
+        }
+        std::filesystem::remove_all(link.parent_path());
+    }
+
+    TEST_CASE("fixed font paths serve when fontconfig knows no fonts") {
+        // The sans entries of the built-in candidate list.
+        const char* const sans[] = {
+            "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/TTF/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        };
+        const char* firstPresent = nullptr;
+        for (const char* path : sans) {
+            if (std::filesystem::exists(path)) {
+                firstPresent = path;
+                break;
+            }
+        }
+        if (firstPresent == nullptr) return; // host keeps its fonts somewhere only fontconfig knows
+
+        ScopedFontconfig fc(std::filesystem::path {});
+        REQUIRE(fc.installed());
+        CHECK(ResolveSystemFontFallback("systemfont_arial") == firstPresent);
+    }
+
+    TEST_CASE("the CJK font fontconfig picks is returned when it exists") {
+        const auto known = hostFontFile("ja");
+        if (known.empty()) return;
+
+        const auto link = linkFontIntoScratch("fc_only_cjk", known);
+        {
+            ScopedFontconfig fc(link.parent_path());
+            REQUIRE(fc.installed());
+            CHECK(wallpaper::ResolveCJKHanFallback() == link.string());
+        }
+        std::filesystem::remove_all(link.parent_path());
     }
 }

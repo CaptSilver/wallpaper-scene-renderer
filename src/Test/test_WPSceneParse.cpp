@@ -2773,6 +2773,44 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(m(1, 3) == doctest::Approx(82.0));
     }
 
+    // A package that references a puppet file it does not ship is an authoring slip and
+    // reads as a note; a file that is present but unparsable is a real error.
+    TEST_CASE("E2E: a missing puppet file is logged as missing, an unparsable one as a failure") {
+        ensureGlslangInit();
+        auto        vfs        = makeAssetsVfsWith({
+            { "/models/_gone.json",
+              R"({ "material": "materials/_plain.json", "puppet": "models/gone.mdl" })" },
+            { "/models/_bad.json",
+              R"({ "material": "materials/_plain.json", "puppet": "models/bad.mdl" })" },
+            { "/models/bad.mdl", "not a puppet" },
+        });
+        const char* kScene = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 701, "name": "ONLY", "image": "models/_IMG_.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 256", "visible": true }
+  ]
+}
+)JSON";
+        for (const char* which : { "gone", "bad" }) {
+            std::string sceneJson = kScene;
+            sceneJson.replace(sceneJson.find("_IMG_"), 5, std::string("_") + which);
+            LogCapture          log;
+            audio::SoundManager sm;
+            WPUserProperties    props {};
+            WPSceneParser       parser;
+            auto scene = parser.Parse("scene_puppet_file", sceneJson, *vfs, sm, props);
+            REQUIRE(scene != nullptr);
+            CHECK(LogCapture::saw("puppet file missing, treating as plain image: "
+                                  "models/gone.mdl") == (std::string(which) == "gone"));
+            CHECK(LogCapture::saw("parse puppet failed: models/bad.mdl") ==
+                  (std::string(which) == "bad"));
+        }
+    }
+
     TEST_CASE("WPModelObject reads the attachment name") {
         auto                   vfs = makeEmptyAssetsVfs();
         auto                   j   = nlohmann::json::parse(R"({
@@ -5070,6 +5108,85 @@ void main() {
         CHECK(hide_log_count == 1);
     }
 
+    TEST_CASE("E2E: hide-pattern hides a matching image object by any comma-separated needle") {
+        ensureGlslangInit();
+        LogCapture  log;
+        auto        vfs        = makeAssetsVfsWith({});
+        const char* kSceneJson = R"JSON(
+        {
+          "general": { "clearcolor": "0 0 0",
+                       "orthogonalprojection": { "width": 1280, "height": 720 } },
+          "objects": [
+            { "id": 300, "name": "keep_visible_layer", "image": "models/_plain.json",
+              "origin": "0 0 0", "visible": true },
+            { "id": 400, "name": "My_Hair_Layer", "image": "models/_plain.json",
+              "origin": "0 0 0", "visible": true }
+          ]
+        }
+        )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        parser.SetHidePattern("nomatch,hair");
+        auto scene = parser.Parse("scene_hide_image", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren())
+                if (auto* hit = findById(c.get(), id)) return hit;
+            return nullptr;
+        };
+        SceneNode* kept   = findById(scene->sceneGraph.get(), 300);
+        SceneNode* hidden = findById(scene->sceneGraph.get(), 400);
+        REQUIRE(kept != nullptr);
+        REQUIRE(hidden != nullptr);
+        CHECK(kept->IsVisible());
+        CHECK_FALSE(hidden->IsVisible());
+
+        int hide_log_count = 0;
+        for (auto& l : LogCapture::lines())
+            if (l.find("HidePattern: id=400") != std::string::npos &&
+                l.find("(match 'hair')") != std::string::npos)
+                hide_log_count++;
+        CHECK(hide_log_count == 1);
+    }
+
+    TEST_CASE("E2E: an alpha animation plays unless the author marked it paused") {
+        ensureGlslangInit();
+        auto        vfs        = makeAssetsVfsWith({});
+        const char* kSceneJson = R"JSON(
+        {
+          "general": { "clearcolor": "0 0 0",
+                       "orthogonalprojection": { "width": 1280, "height": 720 } },
+          "objects": [
+            { "id": 300, "name": "playing", "image": "models/_plain.json", "origin": "0 0 0",
+              "alpha": { "value": 1.0, "animation": {
+                  "c0": [ { "frame": 0, "value": 1 }, { "frame": 30, "value": 0 } ],
+                  "options": { "fps": 30, "length": 30, "mode": "loop",
+                               "startpaused": false } } } },
+            { "id": 400, "name": "paused", "image": "models/_plain.json", "origin": "0 0 0",
+              "alpha": { "value": 1.0, "animation": {
+                  "c0": [ { "frame": 0, "value": 1 }, { "frame": 30, "value": 0 } ],
+                  "options": { "fps": 30, "length": 30, "mode": "loop", "startpaused": true } } } }
+          ]
+        }
+        )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_alpha_anim_paused", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodePropertyAnimations.count(300) == 1u);
+        REQUIRE(scene->nodePropertyAnimations.count(400) == 1u);
+        REQUIRE(scene->nodePropertyAnimations.at(300).size() == 1u);
+        REQUIRE(scene->nodePropertyAnimations.at(400).size() == 1u);
+        CHECK(scene->nodePropertyAnimations.at(300)[0].playing);
+        CHECK_FALSE(scene->nodePropertyAnimations.at(400)[0].playing);
+    }
+
     TEST_CASE("E2E: hide-pattern hides a matching light object, "
               "leaves a non-matching light untouched") {
         LogCapture          log;
@@ -5769,5 +5886,252 @@ TEST_SUITE("WPSceneParser user-property uniform bindings on model and particle m
             REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
             CHECK(wek::userPropsNeedingReload(*scene, { "myprop" }).empty());
         }
+    }
+}
+
+TEST_SUITE("WPSceneParser trail and rope particle meshes") {
+    // Which vertex layout a particle renderer gets: rope ladders, sprite trails, plain quads.
+    // A ropetrail is a trail of sprites despite its name starting with "rope".
+    struct RendererLayout {
+        bool rope;
+        bool spriteTrail;
+    };
+
+    RendererLayout parseRendererLayout(const char* rendererName) {
+        ensureGlslangInit();
+        auto vfs = makeUbVfs({
+            { "/shaders/genericropeparticle.vert", kTrivialVert },
+            { "/shaders/genericropeparticle.frag", kTrivialFrag },
+            { "/particle/p.json",
+              std::string(R"({"emitter":[{}],"renderer":[{"name":")") + rendererName +
+                  R"(","maxlength":8}],"maxcount":4,"material":"materials/_plain.json"})" },
+        });
+        auto scene = parseUb(*vfs, R"({"id":600,"name":"p","particle":"particle/p.json",
+            "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true})");
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->nodeById.count(600) == 1u);
+        SceneMesh* mesh = scene->nodeById.at(600)->Mesh();
+        REQUIRE(mesh != nullptr);
+        const auto& va = mesh->GetVertexArray(0);
+        return { va.GetOption(WE_PRENDER_ROPE), va.GetOption(WE_PRENDER_SPRITETRAIL) };
+    }
+
+    TEST_CASE("a rope renderer builds the rope vertex layout") {
+        auto layout = parseRendererLayout("rope");
+        CHECK(layout.rope);
+        CHECK_FALSE(layout.spriteTrail);
+    }
+
+    TEST_CASE("a ropetrail renderer builds the sprite-trail layout, not the rope one") {
+        auto layout = parseRendererLayout("ropetrail");
+        CHECK_FALSE(layout.rope);
+        CHECK(layout.spriteTrail);
+    }
+
+    TEST_CASE("a spritetrail renderer builds the sprite-trail layout") {
+        auto layout = parseRendererLayout("spritetrail");
+        CHECK_FALSE(layout.rope);
+        CHECK(layout.spriteTrail);
+    }
+
+    TEST_CASE("a sprite renderer builds neither rope nor trail layout") {
+        auto layout = parseRendererLayout("sprite");
+        CHECK_FALSE(layout.rope);
+        CHECK_FALSE(layout.spriteTrail);
+    }
+}
+
+TEST_SUITE("WPSceneParser asset pools and parent links") {
+    constexpr const char* kSceneHead = R"({"general":{"clearcolor":"0 0 0",
+        "orthogonalprojection":{"width":1280,"height":720}},"objects":[)";
+
+    std::shared_ptr<Scene> parseScene(fs::VFS& vfs, const std::string& objects) {
+        ensureGlslangInit();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        return parser.Parse(
+            "scene_pools", std::string(kSceneHead) + objects + "]}", vfs, sm, props);
+    }
+
+    // The host layer carries a script that creates layers from `asset`; `workshopDecl` is the
+    // line workshop-imported scripts start with.
+    std::string poolHost(const std::string& asset, const std::string& workshopDecl) {
+        return R"({"id": 10, "name": "spawner", "image": "models/_plain.json",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+            "visible": {"value": true, "script":
+              "export function update(v) { )" +
+               workshopDecl + " thisScene.createLayer('" + asset + R"('); return v; }"}})";
+    }
+
+    TEST_CASE("an asset missing from its bare path is found under the script's workshop folder") {
+        auto vfs = makeAssetsVfsWith({
+            { "/models/workshop/777/coin.json", wek::test::kPlainImageJson },
+            { "/models/_plain.json", wek::test::kPlainImageJson },
+        });
+        auto scene = parseScene(*vfs, poolHost("models/coin.json", "var __workshopId = '777';"));
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->assetPools.count("models/coin.json") == 1u);
+        CHECK_FALSE(scene->assetPools.at("models/coin.json").empty());
+    }
+
+    TEST_CASE("an asset missing from both its bare path and the workshop folder gets no pool") {
+        auto vfs = makeAssetsVfsWith({
+            { "/models/_plain.json", wek::test::kPlainImageJson },
+        });
+        auto scene = parseScene(*vfs, poolHost("models/coin.json", "var __workshopId = '777';"));
+        REQUIRE(scene != nullptr);
+        CHECK(scene->assetPools.count("models/coin.json") == 0u);
+    }
+
+    TEST_CASE("an asset present at its bare path is pooled without consulting the workshop") {
+        auto vfs = makeAssetsVfsWith({
+            { "/models/coin.json", wek::test::kPlainImageJson },
+            { "/models/_plain.json", wek::test::kPlainImageJson },
+        });
+        auto scene = parseScene(*vfs, poolHost("models/coin.json", ""));
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->assetPools.count("models/coin.json") == 1u);
+        CHECK_FALSE(scene->assetPools.at("models/coin.json").empty());
+    }
+
+    std::string imageWithEffect(int id, int parent, const char* origin, const char* scale) {
+        return R"({"id": )" + std::to_string(id) + R"(, "name": "img)" + std::to_string(id) +
+               R"(", "image": "models/_plain.json", "parent": )" + std::to_string(parent) +
+               R"(, "origin": ")" + origin + R"(", "scale": ")" + scale +
+               R"(", "angles": "0 0 0",
+            "effects": [{"id": 5, "name": "tint", "visible": true, "file": "effects/tint.json"}]})";
+    }
+
+    TEST_CASE("an effect image drops its parent's transform, a plain image keeps it") {
+        auto vfs = makeAssetsVfsWith({
+            { "/models/_plain.json", wek::test::kPlainImageJson },
+            { "/effects/tint.json", wek::test::kEffectFileJson },
+        });
+        auto scene = parseScene(*vfs,
+                                R"({"id": 20, "name": "parent", "image": "models/_plain.json",
+                "origin": "100 50 0", "scale": "2 2 1", "angles": "0 0 0"},)" +
+                                    imageWithEffect(21, 20, "10 10 0", "1 1 1") + "," +
+                                    R"({"id": 22, "name": "plain", "image": "models/_plain.json",
+                "parent": 20, "origin": "10 10 0", "scale": "1 1 1", "angles": "0 0 0"})");
+        REQUIRE(scene != nullptr);
+
+        // The effect image renders its base pass at the origin of its own effect camera.
+        auto* effectChild = scene->nodeById.at(21);
+        effectChild->UpdateTrans();
+        CHECK(effectChild->ModelTrans()(0, 3) == doctest::Approx(0.0));
+        CHECK(effectChild->ModelTrans()(1, 3) == doctest::Approx(0.0));
+
+        auto* plainChild = scene->nodeById.at(22);
+        plainChild->UpdateTrans();
+        CHECK(plainChild->ModelTrans()(0, 3) == doctest::Approx(120.0));
+        CHECK(plainChild->ModelTrans()(1, 3) == doctest::Approx(70.0));
+    }
+
+    TEST_CASE("a group parented to an effect image takes on that image's authored transform") {
+        auto vfs = makeAssetsVfsWith({
+            { "/models/_plain.json", wek::test::kPlainImageJson },
+            { "/effects/tint.json", wek::test::kEffectFileJson },
+        });
+        auto scene = parseScene(
+            *vfs,
+            R"({"id": 20, "name": "parent", "image": "models/_plain.json",
+                "origin": "100 50 0", "scale": "2 2 1", "angles": "0 0 0",
+                "effects": [{"id": 5, "name": "tint", "visible": true,
+                             "file": "effects/tint.json"}]},
+               {"id": 30, "name": "grp", "parent": 20, "origin": "10 10 0", "scale": "1 1 1",
+                "angles": "0 0 0"})");
+        REQUIRE(scene != nullptr);
+
+        // parent origin + parent scale * group origin, scales multiplied.
+        auto* group = scene->nodeById.at(30);
+        CHECK(group->Translate().x() == doctest::Approx(120.0));
+        CHECK(group->Translate().y() == doctest::Approx(70.0));
+        CHECK(group->Scale().x() == doctest::Approx(2.0));
+        CHECK(group->Scale().y() == doctest::Approx(2.0));
+    }
+}
+
+#include "Particle/ParticleModify.h"
+#include "Particle/ParticleSystem.h"
+
+TEST_SUITE("WPSceneParser particle slot reuse") {
+    // Runs a short-lived emitter for a while and reports whether any tick left a dead particle
+    // between two live ones.  A rope's particles are the segments of one strip, in order, so a
+    // rope keeps its live particles together; other renderers refill whichever slot died first.
+    bool leavesDeadParticleBetweenLiveOnes(const char* rendererName) {
+        ensureGlslangInit();
+        auto vfs = makeUbVfs({
+            { "/shaders/genericropeparticle.vert", kTrivialVert },
+            { "/shaders/genericropeparticle.frag", kTrivialFrag },
+            { "/particle/p.json",
+              std::string(R"({"emitter":[{"name":"boxrandom","rate":60,"directions":"0 0 0",
+                      "distancemax":"1 1 0","distancemin":"0 0 0"}],"renderer":[{"name":")") +
+                  rendererName +
+                  R"("}],"maxcount":6,
+                      "initializer":[{"name":"lifetimerandom","min":0.07,"max":0.07}],
+                      "material":"materials/_plain.json"})" },
+        });
+        auto scene = parseUb(*vfs, R"({"id":600,"name":"p","particle":"particle/p.json",
+            "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true})");
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->paritileSys->subsystems.size() == 1u);
+        auto& sub = *scene->paritileSys->subsystems[0];
+
+        bool sandwiched = false;
+        for (int tick = 0; tick < 14; tick++) {
+            scene->PassFrameTime(0.02);
+            sub.Emitt();
+            for (auto& inst : sub.Instances()) {
+                bool seenLive = false, seenDeadAfterLive = false;
+                for (auto& p : inst->ParticlesVec()) {
+                    if (ParticleModify::LifetimeOk(p)) {
+                        if (seenDeadAfterLive) sandwiched = true;
+                        seenLive = true;
+                    } else if (seenLive) {
+                        seenDeadAfterLive = true;
+                    }
+                }
+            }
+        }
+        return sandwiched;
+    }
+
+    TEST_CASE("a rope keeps its live particles contiguous") {
+        CHECK_FALSE(leavesDeadParticleBetweenLiveOnes("rope"));
+    }
+
+    TEST_CASE("a plain sprite renderer refills whichever slot died first") {
+        // Control for the rope case: without it the rope check would pass for any emitter
+        // that never frees a slot.
+        CHECK(leavesDeadParticleBetweenLiveOnes("sprite"));
+    }
+}
+
+TEST_SUITE("CreatePhysicalFs") {
+    TEST_CASE("create=true makes a missing directory and returns a filesystem over it") {
+        const auto dir = std::filesystem::path(wallpaper::test::ScratchDir("physfs", ::getpid())) /
+                         "made_by_create";
+        std::filesystem::remove_all(dir);
+        REQUIRE_FALSE(std::filesystem::exists(dir));
+
+        auto pfs = fs::CreatePhysicalFs(dir.string(), true);
+        CHECK(pfs != nullptr);
+        CHECK(std::filesystem::is_directory(dir));
+        std::filesystem::remove_all(dir);
+    }
+
+    TEST_CASE("a missing directory without create=true yields no filesystem") {
+        const auto dir = std::filesystem::path(wallpaper::test::ScratchDir("physfs", ::getpid())) /
+                         "never_made";
+        std::filesystem::remove_all(dir);
+        CHECK(fs::CreatePhysicalFs(dir.string(), false) == nullptr);
+        CHECK_FALSE(std::filesystem::exists(dir));
+    }
+
+    TEST_CASE("an existing directory is opened as it is") {
+        const auto dir = std::filesystem::path(wallpaper::test::ScratchDir("physfs", ::getpid()));
+        CHECK(fs::CreatePhysicalFs(dir.string(), false) != nullptr);
+        CHECK(fs::CreatePhysicalFs(dir.string(), true) != nullptr);
     }
 }

@@ -1112,6 +1112,22 @@ TEST_SUITE("CustomShaderPass::PassDemandStaticFor") {
 }
 
 TEST_SUITE("CustomShaderPass blocked frame") {
+    TEST_CASE("a blocked pass with a visible node still takes the hidden path") {
+        wallpaper::SceneNode   node;
+        CustomShaderPass::Desc d;
+        d.node = &node;
+        CustomShaderPass pass(d);
+        REQUIRE(node.IsVisible());
+        CHECK(pass.frameHideable(wallpaper::vulkan::PassMergeRole::Standalone).draws);
+
+        pass.setBlockedThisFrame(true);
+        auto f = pass.frameHideable(wallpaper::vulkan::PassMergeRole::Standalone);
+        CHECK_FALSE(f.draws);
+        CHECK(f.inputs == wallpaper::vulkan::DemandInputs::None);
+
+        pass.setBlockedThisFrame(false);
+        CHECK(pass.frameHideable(wallpaper::vulkan::PassMergeRole::Standalone).draws);
+    }
     TEST_CASE("a blocked pass takes the hidden path: no draw, no sampled inputs") {
         CustomShaderPass::Desc d;
         CustomShaderPass       pass(d);

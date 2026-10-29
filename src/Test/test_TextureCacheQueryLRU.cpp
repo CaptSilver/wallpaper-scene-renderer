@@ -1,11 +1,13 @@
 #include <doctest.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "Vulkan/Device.hpp"
 #include "Vulkan/TextureCache.hpp"
 #include "Vulkan/TextureCacheDetail.hpp"
 
@@ -264,6 +266,27 @@ TEST_SUITE("TextureCache on-demand slots") {
         CHECK(residencyEnabledFromEnv("1"));
         CHECK(residencyEnabledFromEnv("off"));
         CHECK_FALSE(residencyEnabledFromEnv("0"));
+    }
+    TEST_CASE("a cache built under WEKDE_RT_RESIDENCY=0 creates render targets eagerly") {
+        const char* old    = std::getenv("WEKDE_RT_RESIDENCY");
+        std::string saved  = old ? old : "";
+        const bool  hadOld = old != nullptr;
+
+        ::unsetenv("WEKDE_RT_RESIDENCY");
+        {
+            wallpaper::vulkan::Device dev;
+            CHECK_FALSE(dev.tex_cache().eagerManaged());
+        }
+        ::setenv("WEKDE_RT_RESIDENCY", "0", 1);
+        {
+            wallpaper::vulkan::Device dev;
+            CHECK(dev.tex_cache().eagerManaged());
+        }
+
+        if (hadOld)
+            ::setenv("WEKDE_RT_RESIDENCY", saved.c_str(), 1);
+        else
+            ::unsetenv("WEKDE_RT_RESIDENCY");
     }
     TEST_CASE("attaching an image bumps the generation and resets the idle and failure counts") {
         RtSlot s;

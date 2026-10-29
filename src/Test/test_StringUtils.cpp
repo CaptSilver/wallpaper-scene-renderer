@@ -1,4 +1,5 @@
 #include <doctest.h>
+#include "Utils/Hash.h"
 #include "Utils/String.h"
 #include "Core/StringHelper.hpp"
 
@@ -194,3 +195,29 @@ TEST_SUITE("sview_nullsafe") {
     }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// hash_combine
+// ===========================================================================
+
+TEST_SUITE("HashCombine") {
+    // Boost's recurrence: seed ^= h(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2).
+    // std::hash on an integer is the identity on the standard libraries we build with, so the
+    // expected values below are the recurrence worked through on 64-bit words.
+    TEST_CASE("combining into a zero seed adds only the golden-ratio constant") {
+        std::size_t seed = 0;
+        utils::hash_combine(seed, std::size_t { 0 });
+        CHECK(seed == 0x9e3779b9u);
+    }
+
+    TEST_CASE("a non-zero seed is shifted left by 6 and right by 2 into the sum") {
+        static_assert(sizeof(std::size_t) == 8);
+        std::size_t seed = 0x9e3779b9u;
+        utils::hash_combine(seed, std::size_t { 0 });
+        CHECK(seed == 0x28cd94bfdeull);
+
+        seed = 0x12345678u;
+        utils::hash_combine(seed, std::size_t { 0xabcdef });
+        CHECK(seed == 0x522b1ad3eull);
+    }
+}

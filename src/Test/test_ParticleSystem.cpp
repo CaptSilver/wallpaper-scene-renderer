@@ -552,6 +552,32 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
         CHECK(inst->ParticlesVec().size() == 3);
     }
 
+    TEST_CASE("an instance is flagged as having no live particle once its last one has died") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub(4, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        bool            spawned = false;
+        sub->AddEmitter([&spawned](std::vector<Particle>& particles, std::vector<ParticleInitOp>&,
+                                   uint32_t, double) {
+            if (spawned) return;
+            spawned = true;
+            Particle p;
+            p.lifetime = 0.03f;
+            particles.push_back(p);
+        });
+
+        // 0.016s per tick: the particle outlives the first tick and not the second.
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        REQUIRE(sub->Instances().size() == 1);
+        auto* inst = sub->Instances().front().get();
+        REQUIRE(inst->ParticlesVec().size() == 1);
+        CHECK_FALSE(inst->IsNoLiveParticle());
+
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        CHECK(inst->IsNoLiveParticle());
+    }
+
     TEST_CASE("spritetrail STATIC: trail history grows alongside particles") {
         ParticleFixture fx;
         auto            sub = fx.makeSub(4, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);

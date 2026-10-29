@@ -118,6 +118,15 @@ TEST_SUITE("SceneCamera_PathInterpolation") {
         CHECK(cam.GetEye().isApprox(origEye));
     }
 
+    TEST_CASE("HasPaths is false until paths are loaded") {
+        auto cam = makePerspCamera();
+        CHECK_FALSE(cam.HasPaths());
+        cam.LoadPaths({ makePath(Vector3d(1, 2, 3), Vector3d(4, 5, 6), 10.0) });
+        CHECK(cam.HasPaths());
+        cam.LoadPaths({});
+        CHECK_FALSE(cam.HasPaths());
+    }
+
     TEST_CASE("LoadPaths sets camera to first keyframe") {
         auto                    cam = makePerspCamera();
         Vector3d                eye0(1, 2, 3);

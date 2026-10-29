@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -131,4 +132,44 @@ TEST_CASE("a spectrum lease starts the bus FFT, dropping it stops it again") {
     a->FeedPcm(pcm.data(), 2048, 2);
     std::this_thread::sleep_for(std::chrono::milliseconds(160));
     CHECK(a->WindowsProcessedForTest() == after_withdraw);
+}
+
+namespace
+{
+// Points libpulse at a socket nobody listens on, so a real capture attempt fails fast without
+// touching whatever sound server the host runs. Naming the server explicitly also keeps
+// libpulse from autospawning one.
+struct UnreachableSoundServerGuard {
+    UnreachableSoundServerGuard() {
+        const char* old = std::getenv("PULSE_SERVER");
+        m_hadOld        = old != nullptr;
+        if (old) m_old = old;
+        setenv("PULSE_SERVER", "unix:/nonexistent/wek-test-pulse.sock", 1);
+        unsetenv("WEK_TEST_AUDIO_NULL_CAPTURE");
+        wallpaper::audio::AudioBus::TEST_resetForNextCase();
+    }
+    ~UnreachableSoundServerGuard() {
+        wallpaper::audio::AudioBus::TEST_resetForNextCase();
+        if (m_hadOld)
+            setenv("PULSE_SERVER", m_old.c_str(), 1);
+        else
+            unsetenv("PULSE_SERVER");
+    }
+
+private:
+    bool        m_hadOld { false };
+    std::string m_old;
+};
+} // namespace
+
+TEST_SUITE("AudioBus capture init failure") {
+    TEST_CASE("AudioBus: a failed capture init leaves the subscriber on analyzer-only mode") {
+        UnreachableSoundServerGuard g;
+        const int                   before = wallpaper::audio::AudioBus::TEST_getInitCount();
+
+        auto a = wallpaper::audio::AudioBus::Acquire(true);
+        REQUIRE(a);
+        CHECK_FALSE(wallpaper::audio::AudioBus::HasSystemCapture());
+        CHECK(wallpaper::audio::AudioBus::TEST_getInitCount() == before);
+    }
 }
