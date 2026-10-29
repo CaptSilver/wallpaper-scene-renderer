@@ -3617,11 +3617,11 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     // getEffect(name / index) finds them.
     TEST_CASE("a literal-hidden effect a script shows by name is built hidden and named") {
         ensureGlslangInit();
-        auto        vfs        = makeAssetsVfsWith({
+        auto                vfs        = makeAssetsVfsWith({
             { "/effects/noise.json",
-                     R"({"name": "Noise", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "Noise", "passes": [{"material": "materials/_plain.json"}]})" },
         });
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -3640,7 +3640,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         audio::SoundManager sm;
         WPUserProperties    props;
         WPSceneParser       parser;
-        auto                scene = parser.Parse("scene_hidden_effect_shown", kSceneJson, *vfs, sm, props);
+        auto scene = parser.Parse("scene_hidden_effect_shown", kSceneJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
 
         REQUIRE(scene->nodeEffectLayerMap.count(801) == 1);
@@ -3658,15 +3658,15 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
 
     TEST_CASE("an all-hidden chain builds an effect layer when a script toggles it by index") {
         ensureGlslangInit();
-        auto        vfs        = makeAssetsVfsWith({
+        auto                vfs        = makeAssetsVfsWith({
             { "/effects/a.json",
-                     R"({"name": "a", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "a", "passes": [{"material": "materials/_plain.json"}]})" },
             { "/effects/b.json",
-                     R"({"name": "b", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "b", "passes": [{"material": "materials/_plain.json"}]})" },
             { "/effects/c.json",
-                     R"({"name": "c", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "c", "passes": [{"material": "materials/_plain.json"}]})" },
         });
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -3700,15 +3700,15 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // Script indices address the built list, so a hidden effect in the middle must not shift
         // the ones after it.
         ensureGlslangInit();
-        auto        vfs        = makeAssetsVfsWith({
+        auto                vfs        = makeAssetsVfsWith({
             { "/effects/a.json",
-                     R"({"name": "a", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "a", "passes": [{"material": "materials/_plain.json"}]})" },
             { "/effects/b.json",
-                     R"({"name": "b", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "b", "passes": [{"material": "materials/_plain.json"}]})" },
             { "/effects/c.json",
-                     R"({"name": "c", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "c", "passes": [{"material": "materials/_plain.json"}]})" },
         });
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -3805,11 +3805,11 @@ void main() {
 
     TEST_CASE("a literal-hidden effect with no script stays unbuilt") {
         ensureGlslangInit();
-        auto        vfs        = makeAssetsVfsWith({
+        auto                vfs        = makeAssetsVfsWith({
             { "/effects/noise.json",
-                     R"({"name": "Noise", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "Noise", "passes": [{"material": "materials/_plain.json"}]})" },
         });
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -3837,11 +3837,11 @@ void main() {
         ensureGlslangInit();
         if (ResolveSystemFontFallback("systemfont_sans").empty()) return;
 
-        auto        vfs        = makeAssetsVfsWith({
+        auto                vfs        = makeAssetsVfsWith({
             { "/effects/glow.json",
-                     R"({"name": "glow", "passes": [{"material": "materials/_plain.json"}]})" },
+              R"({"name": "glow", "passes": [{"material": "materials/_plain.json"}]})" },
         });
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },

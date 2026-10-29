@@ -517,7 +517,7 @@ TEST_SUITE("CustomShaderPass::ChainVisibility") {
         wallpaper::SceneImageEffect a, b;
         a.visible = true;
         b.visible = false;
-        auto v = wallpaper::vulkan::ChainVisibility({ &a, nullptr, &b });
+        auto v    = wallpaper::vulkan::ChainVisibility({ &a, nullptr, &b });
         CHECK(v == std::vector<bool> { true, false, false });
     }
     TEST_CASE("every entry is filled, not just the first") {

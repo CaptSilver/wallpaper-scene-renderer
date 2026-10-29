@@ -26,7 +26,6 @@ using wallpaper::vulkan::detail::selectEvictionVictims;
 // pin the eviction policy + env-parse contracts that the production code
 // delegates to, so any regression surfaces in the unit suite first.
 TEST_SUITE("TextureCache query-tex LRU policy") {
-
     TEST_CASE("evicts oldest non-persist entries above the soft cap") {
         // 6 non-persist entries with monotonically increasing lru_tick.
         // Cap = 4 → must evict 2 victims, the two with the lowest ticks
@@ -99,13 +98,12 @@ TEST_SUITE("TextureCache query-tex LRU policy") {
 // crashed plasmashell on wallpapers with more effect RTs than the cap).  Only
 // prior-generation (previous-scene) entries stay reclaimable.
 TEST_SUITE("TextureCache query-tex generation protection") {
-
     TEST_CASE("current-generation entries are all protected") {
         // Four non-persist entries, all requested in the current generation (7)
         // → all live, so the effective persist mask protects every one.
         const std::vector<uint8_t>  persist  = { 0, 0, 0, 0 };
         const std::vector<uint64_t> last_gen = { 7, 7, 7, 7 };
-        const auto                  mask = effectiveEvictionPersist(persist, last_gen, 7);
+        const auto                  mask     = effectiveEvictionPersist(persist, last_gen, 7);
         REQUIRE(mask.size() == 4);
         for (auto m : mask) CHECK(m == 1u);
     }
@@ -115,7 +113,7 @@ TEST_SUITE("TextureCache query-tex generation protection") {
         // (reclaimable); 1 and 3 are live this scene (protected).
         const std::vector<uint8_t>  persist  = { 0, 0, 0, 0 };
         const std::vector<uint64_t> last_gen = { 6, 7, 6, 7 };
-        const auto                  mask = effectiveEvictionPersist(persist, last_gen, 7);
+        const auto                  mask     = effectiveEvictionPersist(persist, last_gen, 7);
         CHECK(mask[0] == 0u);
         CHECK(mask[1] == 1u);
         CHECK(mask[2] == 0u);
@@ -125,7 +123,7 @@ TEST_SUITE("TextureCache query-tex generation protection") {
     TEST_CASE("explicit persist wins regardless of generation") {
         const std::vector<uint8_t>  persist  = { 1, 0 };
         const std::vector<uint64_t> last_gen = { 3, 3 }; // both old (current=9)
-        const auto                  mask = effectiveEvictionPersist(persist, last_gen, 9);
+        const auto                  mask     = effectiveEvictionPersist(persist, last_gen, 9);
         CHECK(mask[0] == 1u); // explicit persist
         CHECK(mask[1] == 0u); // old gen, not persist
     }
@@ -138,8 +136,8 @@ TEST_SUITE("TextureCache query-tex generation protection") {
         const std::vector<uint64_t> ticks    = { 1, 2, 3, 4, 5 };
         const std::vector<uint8_t>  persist  = { 0, 0, 0, 0, 0 };
         const std::vector<uint64_t> last_gen = { 2, 2, 2, 2, 2 };
-        const auto                  mask    = effectiveEvictionPersist(persist, last_gen, 2);
-        const auto                  victims = selectEvictionVictims(ticks, mask, /*cap=*/3);
+        const auto                  mask     = effectiveEvictionPersist(persist, last_gen, 2);
+        const auto                  victims  = selectEvictionVictims(ticks, mask, /*cap=*/3);
         CHECK(victims.empty());
     }
 
@@ -151,7 +149,6 @@ TEST_SUITE("TextureCache query-tex generation protection") {
 }
 
 TEST_SUITE("TextureCache query-cap env parse") {
-
     TEST_CASE("null or empty env returns the default") {
         CHECK(parseQueryCapEnv(nullptr, /*default=*/64) == 64u);
         CHECK(parseQueryCapEnv("", /*default=*/64) == 64u);

@@ -23,22 +23,19 @@ TEST_SUITE("Device::d32_sampleable") {
         VkFormatProperties props {};
         props.optimalTilingFeatures = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
         // The probe we will write in Device.cpp must use this exact test.
-        bool sampleable =
-            (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+        bool sampleable = (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
         CHECK(sampleable == true);
 
         props.optimalTilingFeatures = 0;
-        sampleable =
-            (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+        sampleable = (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
         CHECK(sampleable == false);
 
         // linearTilingFeatures must NOT be the predicate (linear tiling is
         // rarely populated for depth formats; using it would gate path A off
         // on every real GPU).
-        props.optimalTilingFeatures  = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-        props.linearTilingFeatures   = 0;
-        sampleable =
-            (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+        props.optimalTilingFeatures = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        props.linearTilingFeatures  = 0;
+        sampleable = (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
         CHECK(sampleable == true);
     }
 }

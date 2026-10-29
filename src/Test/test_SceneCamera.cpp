@@ -577,9 +577,9 @@ TEST_SUITE("SceneCamera_Ortho") {
 
         Eigen::Vector4d pt(1, 0, 0, 1);
         double          wide_x   = std::abs((wide.GetViewProjectionMatrix() * pt).x() /
-                                 (wide.GetViewProjectionMatrix() * pt).w());
+                                            (wide.GetViewProjectionMatrix() * pt).w());
         double          narrow_x = std::abs((narrow.GetViewProjectionMatrix() * pt).x() /
-                                   (narrow.GetViewProjectionMatrix() * pt).w());
+                                            (narrow.GetViewProjectionMatrix() * pt).w());
         // Wider aspect → same physical X subtends smaller angle → smaller NDC x
         CHECK(wide_x < narrow_x);
     }
@@ -820,7 +820,7 @@ TEST_SUITE("SceneCamera_NodeAttached") {
 
     TEST_CASE("GetDirection without direct lookat and without node returns -Z") {
         SceneCamera cam(1.0f, 0.1f, 100.0f, 60.0f);
-        auto dir = cam.GetDirection();
+        auto        dir = cam.GetDirection();
         CHECK(dir.z() == doctest::Approx(-1.0).epsilon(0.01));
     }
 
@@ -837,9 +837,8 @@ TEST_SUITE("SceneCamera_NodeAttached") {
 
     TEST_CASE("GetViewMatrix returns the cached view matrix after Update") {
         auto cam = makePerspCamera();
-        cam.SetDirectLookAt(Eigen::Vector3d(0, 0, 5),
-                            Eigen::Vector3d(0, 0, 0),
-                            Eigen::Vector3d(0, 1, 0));
+        cam.SetDirectLookAt(
+            Eigen::Vector3d(0, 0, 5), Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(0, 1, 0));
         Eigen::Matrix4d view = cam.GetViewMatrix();
         // LookAt at (0,0,5) → translation -5 along Z (world →  view).
         // The 4th column has the translation.
@@ -859,4 +858,3 @@ TEST_SUITE("SceneCamera_NodeAttached") {
         CHECK(std::isfinite(vp(3, 3)));
     }
 }
-
