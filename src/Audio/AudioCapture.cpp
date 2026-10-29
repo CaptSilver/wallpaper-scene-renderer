@@ -8,6 +8,7 @@
 #include <miniaudio/miniaudio.h>
 
 #ifdef WEK_HAVE_LIBPULSE
+#    include "Audio/PulseSubscribe.hpp"
 #    include <pulse/pulseaudio.h>
 #    include <pulse/thread-mainloop.h>
 #endif
@@ -215,11 +216,7 @@ struct AudioCapture::Impl {
 
     static void paSubscribeCb(pa_context* c, pa_subscription_event_type_t t, uint32_t /*idx*/,
                               void* userdata) {
-        // Any server/sink event triggers a default-sink re-check.  Sink unload
-        // (e.g. user removes EasyEffects sink) is what makes this necessary —
-        // SERVER events alone don't fire on sink removal.
-        auto facility = static_cast<unsigned>(t) & PA_SUBSCRIPTION_EVENT_FACILITY_MASK;
-        if (facility == PA_SUBSCRIPTION_EVENT_SERVER || facility == PA_SUBSCRIPTION_EVENT_SINK) {
+        if (ShouldRecheckDefaultSink(t)) {
             pa_operation* op = pa_context_get_server_info(c, paSubscribedServerInfoCb, userdata);
             if (op) pa_operation_unref(op);
         }
