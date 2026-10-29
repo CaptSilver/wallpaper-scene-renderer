@@ -369,7 +369,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     const bool shakeActive    = m_shake.enable && cameraFollowsGlobalView(cam_name, linkedToGlobal);
 
     auto&      mc        = m_nodeMatrixCache[{ pNode, std::string(cam_name) }];
-    const bool recompute = uniformMatricesShouldRecompute(! mc.valid,
+    const bool recompute = uniformMatricesShouldRecompute(! mc.valid || mc.camera != camera,
                                                           parallaxActive,
                                                           shakeActive,
                                                           pNode->TransEpoch(),
@@ -580,6 +580,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         }
         mc.node_epoch = pNode->TransEpoch();
         mc.vp_epoch   = camera->VpEpoch();
+        mc.camera     = camera;
         mc.valid      = true;
     }
     // ---- end matrix/VP block; per-frame-volatile uniforms continue below ----

@@ -1106,6 +1106,41 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::matrix_block") {
         REQUIRE(cap2.find(G_M) != nullptr);
         CHECK(cap2.find(G_M)->values[12] == doctest::Approx(9.0f));
     }
+
+    TEST_CASE("switching the active camera serves the new camera's VP even at equal VpEpoch") {
+        Scene        scene;
+        SceneCamera* camA = installActiveCamera(scene, 1920.0, 1080.0);
+
+        auto camB = std::make_shared<SceneCamera>(800, 600, 0.01f, 1000.0f);
+        camB->SetDirectLookAt(
+            Eigen::Vector3d(0, 0, 1), Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(0, 1, 0));
+        scene.cameras["second"] = camB;
+        // The cache must not rely on epochs being distinct across cameras.
+        REQUIRE(camA->VpEpoch() == camB->VpEpoch());
+
+        auto f = NodeFixture::make(Eigen::Vector3f(3, 7, 0));
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_VP }));
+
+        sprite_map_t   sprites;
+        UniformCapture capA;
+        updater.UpdateUniforms(f.node.get(), sprites, capA.op());
+        REQUIRE(capA.find(G_VP) != nullptr);
+
+        scene.activeCamera = camB.get();
+        UniformCapture capB;
+        updater.UpdateUniforms(f.node.get(), sprites, capB.op());
+        REQUIRE(capB.find(G_VP) != nullptr);
+
+        const auto expectedB = ShaderValue::fromMatrix(camB->GetViewProjectionMatrix());
+        REQUIRE(capB.find(G_VP)->values.size() == (size_t)expectedB.size());
+        for (size_t i = 0; i < capB.find(G_VP)->values.size(); ++i) {
+            CHECK_MESSAGE(capB.find(G_VP)->values[i] == doctest::Approx(expectedB.data()[i]),
+                          "element " << i);
+        }
+    }
 }
 
 // =============================================================================

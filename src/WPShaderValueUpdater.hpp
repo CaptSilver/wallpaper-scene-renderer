@@ -30,6 +30,7 @@ class AudioAnalyzer;
 }
 
 class Scene;
+class SceneCamera;
 
 // Wallpaper Engine's g_Time is a float32 "seconds since the wallpaper started".
 // The scene clock is an unbounded double; narrowing it straight to float32 means
@@ -117,14 +118,18 @@ struct WPUniformInfo {
 // 4x4 inverses (g_ModelMatrixInverse / g_ModelViewProjectionMatrixInverse)
 // and the four fromMatrix conversions run once per CHANGE, not per frame.
 struct WPNodeMatrixCache {
-    uint64_t    node_epoch { 0 };
-    uint64_t    vp_epoch { 0 };
-    bool        valid { false };
-    bool        has_vp { false }, has_m { false }, has_am { false };
-    bool        has_mi { false }, has_mvp { false }, has_mvpi { false };
-    ShaderValue nm;
-    bool        has_nm { false };
-    ShaderValue vp, m, am, mi, mvp, mvpi;
+    uint64_t node_epoch { 0 };
+    uint64_t vp_epoch { 0 };
+    // Camera the entry was computed for.  An empty camera name resolves to
+    // Scene::activeCamera, which can be switched; separate cameras start at the
+    // same epoch, so the epoch alone cannot tell them apart.
+    const SceneCamera* camera { nullptr };
+    bool               valid { false };
+    bool               has_vp { false }, has_m { false }, has_am { false };
+    bool               has_mi { false }, has_mvp { false }, has_mvpi { false };
+    ShaderValue        nm;
+    bool               has_nm { false };
+    ShaderValue        vp, m, am, mi, mvp, mvpi;
 };
 
 struct WPShaderValueData {
