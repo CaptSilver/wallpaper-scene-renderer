@@ -455,6 +455,7 @@ void PumpVolumetricFrame(Scene& scene, WPShaderValueUpdater& updater) {
             if (candidate_idx < 0 || candidate_idx >= (int)scene.volumetricsConfig.per_light.size())
                 return;
             auto& pl = scene.volumetricsConfig.per_light[(size_t)candidate_idx];
+            (void)l; // Used only by the assertion in debug builds.
             assert(pl.light == l && "per_light index/candidate desync");
             writePerLightVarToNode(pl.front_node.get(), slot, v);
             writePerLightVarToNode(pl.fullscreen_node.get(), slot, v);
