@@ -10,6 +10,7 @@
 #include "SystemFontFallback.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <fontconfig/fontconfig.h>
@@ -274,5 +275,28 @@ TEST_SUITE("SystemFontFallback") {
             CHECK(wallpaper::ResolveCJKHanFallback() == link.string());
         }
         std::filesystem::remove_all(link.parent_path());
+    }
+
+    TEST_CASE("CJK candidate list: first existing path wins, missing ones are skipped") {
+        const auto dir =
+            std::filesystem::path(wallpaper::test::ScratchDir("cjk_candidates", ::getpid()));
+        std::filesystem::remove_all(dir);
+        std::filesystem::create_directories(dir);
+        const auto missing = (dir / "missing.ttc").string();
+        const auto first   = (dir / "first.ttc").string();
+        const auto second  = (dir / "second.ttc").string();
+        for (const auto& f : { first, second }) std::ofstream(f) << "x";
+
+        {
+            ScopedFontconfig fc(std::filesystem::path {});
+            REQUIRE(fc.installed());
+            const char* const list[] = { missing.c_str(), first.c_str(), second.c_str() };
+            CHECK(wallpaper::ResolveCJKHanFallbackFrom(list) == first);
+
+            const char* const none[] = { missing.c_str() };
+            CHECK(wallpaper::ResolveCJKHanFallbackFrom(none).empty());
+            CHECK(wallpaper::ResolveCJKHanFallbackFrom({}).empty());
+        }
+        std::filesystem::remove_all(dir);
     }
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -186,6 +187,16 @@ FontFamily ClassifyName(const std::string& we_name) {
     return FontFamily::Sans;
 }
 
+std::string FirstExistingPath(std::span<const char* const> candidates) {
+    for (const char* path : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec) && ! ec) {
+            return path;
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 std::string ResolveSystemFontFallback(const std::string& we_name) {
@@ -201,13 +212,8 @@ std::string ResolveSystemFontFallback(const std::string& we_name) {
     }
 
     // Fallback for hosts with no usable fontconfig configuration.
-    for (const char* path : CandidatesFor(family)) {
-        std::error_code ec;
-        if (std::filesystem::exists(path, ec) && ! ec) {
-            return path;
-        }
-    }
-    return {};
+    const auto& candidates = CandidatesFor(family);
+    return FirstExistingPath(candidates);
 }
 
 std::string ReadSystemFile(const std::string& path) {
@@ -238,7 +244,7 @@ std::string ResolveCJKHanFallback() {
     // single OTC covering Hans/Hant/Hangul/Kana in one face.  Source Han Sans
     // and Sarasa Gothic are alternative families; if a host has only those
     // installed the fallback returns empty and the renderer emits .notdef.
-    static const char* kCandidates[] = {
+    static const char* const kCandidates[] = {
         "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -248,9 +254,13 @@ std::string ResolveCJKHanFallback() {
         // Last-resort: any Noto Sans CJK weight at the canonical Fedora path.
         "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Medium.ttc",
     };
+    return ResolveCJKHanFallbackFrom(kCandidates);
+}
+
+std::string ResolveCJKHanFallbackFrom(std::span<const char* const> candidates) {
     // Ask by language coverage first.  openSUSE ships per-language variable
     // OTFs (NotoSansCJKjp-VF.otf) rather than the pan-CJK .ttc these filenames
-    // assume, so the list below misses there even with a perfectly good CJK
+    // assume, so the fixed-path candidates miss there even with a perfectly good CJK
     // font installed.  Han is shared across these languages, so the first face
     // covering any of them serves.
     for (const char* lang : { "ja", "zh-cn", "zh-tw", "ko" }) {
@@ -262,13 +272,7 @@ std::string ResolveCJKHanFallback() {
         }
     }
 
-    for (const char* path : kCandidates) {
-        std::error_code ec;
-        if (std::filesystem::exists(path, ec) && ! ec) {
-            return path;
-        }
-    }
-    return {};
+    return FirstExistingPath(candidates);
 }
 
 } // namespace wallpaper

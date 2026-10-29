@@ -18,6 +18,7 @@
 //
 // Pure helper.  No side effects.  Unit-testable in isolation.
 
+#include <span>
 #include <string>
 
 namespace wallpaper
@@ -35,5 +36,9 @@ std::string ReadSystemFile(const std::string& path);
 // installed.  Caller decides what to do on empty (typically fall back to
 // the primary face's .notdef glyph plus a rate-limited LOG_INFO).
 std::string ResolveCJKHanFallback();
+
+// Same lookup with the fixed-path candidates supplied by the caller: fontconfig is asked by
+// language first, then the first existing candidate wins.  Empty when neither finds a font.
+std::string ResolveCJKHanFallbackFrom(std::span<const char* const> candidates);
 
 } // namespace wallpaper
