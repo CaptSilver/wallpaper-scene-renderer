@@ -35,27 +35,43 @@ uint32_t FindUnifiedFamily(const std::vector<uint32_t>& graphics,
     }
     return UINT32_MAX;
 }
+
+std::vector<uint32_t> FindGraphicsFamilies(std::span<const VkQueueFamilyProperties> props) {
+    std::vector<uint32_t> out;
+    uint32_t              index = 0;
+    for (auto& prop : props) {
+        if (prop.queueFlags & VK_QUEUE_GRAPHICS_BIT) out.push_back(index);
+        index++;
+    }
+    return out;
+}
 } // namespace wallpaper::vulkan::queue_selection
+
+VkSampleCountFlagBits wallpaper::vulkan::MaxMSAASamples(VkSampleCountFlags color,
+                                                        VkSampleCountFlags depth) {
+    const VkSampleCountFlags counts = color & depth;
+    if (counts & VK_SAMPLE_COUNT_8_BIT) return VK_SAMPLE_COUNT_8_BIT;
+    if (counts & VK_SAMPLE_COUNT_4_BIT) return VK_SAMPLE_COUNT_4_BIT;
+    if (counts & VK_SAMPLE_COUNT_2_BIT) return VK_SAMPLE_COUNT_2_BIT;
+    return VK_SAMPLE_COUNT_1_BIT;
+}
 
 bool Device::CheckGPU(vvk::PhysicalDevice gpu, std::span<const Extension> exts,
                       VkSurfaceKHR surface) {
     std::vector<VkDeviceQueueCreateInfo> queues;
     auto                                 props = gpu.GetQueueFamilyProperties();
 
-    // check queue
-    bool has_graphics_queue { false };
+    // check queue: the same graphics-family rule ChooseDeviceQueue relies on
+    // when it takes the first such family.
+    if (queue_selection::FindGraphicsFamilies(props).empty()) return false;
     bool has_present_queue { false };
-    uint index { 0 };
-    for (auto& prop : props) {
-        if (prop.queueFlags & VK_QUEUE_GRAPHICS_BIT) has_graphics_queue = true;
-        if (surface) {
+    if (surface) {
+        for (uint index = 0; index < props.size(); index++) {
             bool ok { false };
             VVK_CHECK(gpu.GetSurfaceSupportKHR(index, surface, ok));
             if (ok) has_present_queue = true;
         }
-        index++;
-    };
-    if (! has_graphics_queue) return false;
+    }
     if (surface && ! has_present_queue) return false;
 
     // check exts
@@ -74,12 +90,7 @@ std::vector<VkDeviceQueueCreateInfo> Device::ChooseDeviceQueue(VkSurfaceKHR surf
 
     auto props = m_gpu.GetQueueFamilyProperties();
 
-    std::vector<uint32_t> graphic_indexs;
-    uint32_t              index = 0;
-    for (auto& prop : props) {
-        if (prop.queueFlags & VK_QUEUE_GRAPHICS_BIT) graphic_indexs.push_back(index);
-        index++;
-    };
+    std::vector<uint32_t> graphic_indexs = queue_selection::FindGraphicsFamilies(props);
     // Default: first graphics family for both render and present.  When a
     // surface is provided we prefer a graphics family that ALSO supports
     // presentation — that lets the command pool, the render submit queue, and
@@ -91,7 +102,7 @@ std::vector<VkDeviceQueueCreateInfo> Device::ChooseDeviceQueue(VkSurfaceKHR surf
     m_present_queue.family_index  = graphic_indexs.front();
     if (surface) {
         std::vector<uint32_t> present_indexs;
-        index = 0;
+        uint32_t              index = 0;
         for (auto& prop : props) {
             (void)prop;
             bool ok { false };

@@ -6,6 +6,7 @@
 #include "TextureCache.hpp"
 
 #include <array>
+#include <span>
 #include <vector>
 
 namespace wallpaper
@@ -23,7 +24,13 @@ namespace queue_selection
 // in test_DeviceQueueSelection.cpp.
 uint32_t FindUnifiedFamily(const std::vector<uint32_t>& graphics,
                            const std::vector<uint32_t>& present);
+
+// Indices of the queue families that advertise the graphics bit, in family order.
+std::vector<uint32_t> FindGraphicsFamilies(std::span<const VkQueueFamilyProperties> props);
 } // namespace queue_selection
+
+// Highest MSAA count (8, 4, 2, else 1) that both the colour and depth framebuffer masks support.
+VkSampleCountFlagBits MaxMSAASamples(VkSampleCountFlags color, VkSampleCountFlags depth);
 
 struct PipelineParameters;
 
@@ -52,12 +59,8 @@ public:
     const auto&           limits() const { return m_limits; }
     float                 maxAnisotropy() const { return m_limits.maxSamplerAnisotropy; }
     VkSampleCountFlagBits maxMSAASamples() const {
-        VkSampleCountFlags counts =
-            m_limits.framebufferColorSampleCounts & m_limits.framebufferDepthSampleCounts;
-        if (counts & VK_SAMPLE_COUNT_8_BIT) return VK_SAMPLE_COUNT_8_BIT;
-        if (counts & VK_SAMPLE_COUNT_4_BIT) return VK_SAMPLE_COUNT_4_BIT;
-        if (counts & VK_SAMPLE_COUNT_2_BIT) return VK_SAMPLE_COUNT_2_BIT;
-        return VK_SAMPLE_COUNT_1_BIT;
+        return MaxMSAASamples(m_limits.framebufferColorSampleCounts,
+                              m_limits.framebufferDepthSampleCounts);
     }
     const auto& vma_allocator() const { return *m_allocator; }
     const auto& cmd_pool() const { return m_command_pool; }

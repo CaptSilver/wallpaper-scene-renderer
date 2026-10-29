@@ -4,6 +4,8 @@
 
 #include <vector>
 
+using wallpaper::vulkan::MaxMSAASamples;
+using wallpaper::vulkan::queue_selection::FindGraphicsFamilies;
 using wallpaper::vulkan::queue_selection::FindUnifiedFamily;
 
 TEST_SUITE_BEGIN("DeviceQueueSelection");
@@ -47,6 +49,48 @@ TEST_CASE("FindUnifiedFamily: empty present list returns UINT32_MAX") {
 
 TEST_CASE("FindUnifiedFamily: both empty returns UINT32_MAX") {
     CHECK(FindUnifiedFamily({}, {}) == UINT32_MAX);
+}
+
+TEST_CASE("FindGraphicsFamilies: keeps only families with the graphics bit, in order") {
+    auto fam = [](VkQueueFlags f) {
+        VkQueueFamilyProperties p {};
+        p.queueFlags = f;
+        return p;
+    };
+    std::vector<VkQueueFamilyProperties> props {
+        fam(VK_QUEUE_COMPUTE_BIT),
+        fam(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT),
+        fam(VK_QUEUE_TRANSFER_BIT),
+        fam(VK_QUEUE_GRAPHICS_BIT),
+        fam(0),
+    };
+    CHECK(FindGraphicsFamilies(props) == std::vector<uint32_t> { 1, 3 });
+    CHECK(FindGraphicsFamilies({}).empty());
+    props.erase(props.begin() + 1);
+    props.erase(props.begin() + 2);
+    CHECK(FindGraphicsFamilies(props).empty());
+}
+
+TEST_CASE("MaxMSAASamples: highest count present in both masks") {
+    constexpr VkSampleCountFlags all = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
+                                       VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT;
+    CHECK(MaxMSAASamples(all, all) == VK_SAMPLE_COUNT_8_BIT);
+    CHECK(MaxMSAASamples(VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_2_BIT,
+                         VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_2_BIT) == VK_SAMPLE_COUNT_4_BIT);
+    CHECK(MaxMSAASamples(VK_SAMPLE_COUNT_2_BIT, VK_SAMPLE_COUNT_2_BIT) == VK_SAMPLE_COUNT_2_BIT);
+    CHECK(MaxMSAASamples(VK_SAMPLE_COUNT_1_BIT, VK_SAMPLE_COUNT_1_BIT) == VK_SAMPLE_COUNT_1_BIT);
+    CHECK(MaxMSAASamples(0, 0) == VK_SAMPLE_COUNT_1_BIT);
+}
+
+TEST_CASE("MaxMSAASamples: a count in only one mask does not count") {
+    constexpr VkSampleCountFlags all = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
+                                       VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT;
+    CHECK(MaxMSAASamples(all, VK_SAMPLE_COUNT_4_BIT) == VK_SAMPLE_COUNT_4_BIT);
+    CHECK(MaxMSAASamples(VK_SAMPLE_COUNT_4_BIT, all) == VK_SAMPLE_COUNT_4_BIT);
+    CHECK(MaxMSAASamples(VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_2_BIT) == VK_SAMPLE_COUNT_1_BIT);
+    CHECK(MaxMSAASamples(VK_SAMPLE_COUNT_8_BIT | VK_SAMPLE_COUNT_2_BIT,
+                         VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_2_BIT) == VK_SAMPLE_COUNT_2_BIT);
+    CHECK(MaxMSAASamples(VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_8_BIT) == VK_SAMPLE_COUNT_1_BIT);
 }
 
 TEST_SUITE_END();
