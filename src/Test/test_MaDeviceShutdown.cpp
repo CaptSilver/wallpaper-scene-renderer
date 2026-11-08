@@ -22,10 +22,22 @@ constexpr auto kServerEventAfter = std::chrono::seconds(2);
 struct FakeMainLoop {
     std::mutex              m;
     std::condition_variable cv;
+    std::condition_variable asleepCv;
+    bool                    asleep { false };
     bool                    wakeupRequested { false };
     bool                    leftByWakeup { false };
     int                     serverEvents { 0 };
 };
+
+// ma_device_start returns once miniaudio marks the device started, which can be
+// before its worker thread reaches the data loop.  A stop issued in that window
+// finds the loop never asleep, so wait until it is before testing the wakeup.
+bool waitUntilAsleep(FakeMainLoop& loop) {
+    std::unique_lock<std::mutex> lk(loop.m);
+    return loop.asleepCv.wait_for(lk, std::chrono::seconds(5), [&] {
+        return loop.asleep;
+    });
+}
 
 FakeMainLoop* loopOf(ma_device* d) { return static_cast<FakeMainLoop*>(d->pUserData); }
 
@@ -51,6 +63,8 @@ ma_result fakeDataLoop(ma_device* pDevice) {
     FakeMainLoop* loop = loopOf(pDevice);
     while (ma_device_get_state(pDevice) == ma_device_state_started) {
         std::unique_lock<std::mutex> lk(loop->m);
+        loop->asleep = true;
+        loop->asleepCv.notify_all();
         if (loop->cv.wait_for(lk, kServerEventAfter, [&] {
                 return loop->wakeupRequested;
             })) {
@@ -115,6 +129,7 @@ TEST_SUITE("StopAndUninitDevice") {
         ma_device    dev {};
         backend.open(dev, loop);
         REQUIRE(ma_device_start(&dev) == MA_SUCCESS);
+        REQUIRE(waitUntilAsleep(loop));
 
         const auto t0 = std::chrono::steady_clock::now();
         wallpaper::audio::StopAndUninitDevice(&dev);
