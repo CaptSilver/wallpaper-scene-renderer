@@ -497,6 +497,11 @@ if(Qt6_FOUND)
     # that builds the identical file would fail it on warnings production was
     # deliberately spared from.
     target_compile_options(scenescript_tests PRIVATE ${wek_warn_opts} ${WEK_DOCTEST_WERROR_EXEMPT_FLAGS})
+    # Fills Vulkan create-info structs the way src/Vulkan and src/VulkanRender
+    # do ({ .sType = ..., .pNext = ... }, the rest zeroed), so it takes their
+    # -Wno-missing-field-initializers too.
+    set_source_files_properties(test_GlExtraSemaphoreGpu.cpp PROPERTIES
+        COMPILE_OPTIONS -Wno-missing-field-initializers)
     target_link_libraries(scenescript_tests PRIVATE
         Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer nlohmann_json
         ${CMAKE_DL_LIBS})

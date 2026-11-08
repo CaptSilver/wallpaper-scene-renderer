@@ -8,6 +8,18 @@ using wallpaper::vulkan::MaxMSAASamples;
 using wallpaper::vulkan::queue_selection::FindGraphicsFamilies;
 using wallpaper::vulkan::queue_selection::FindUnifiedFamily;
 
+namespace
+{
+// Value-initialise, then set fields: a designated initializer that names only
+// some fields trips -Wmissing-designated-field-initializers under -Werror.
+VkQueueFamilyProperties Family(VkQueueFlags flags, uint32_t count = 0) {
+    VkQueueFamilyProperties p {};
+    p.queueFlags = flags;
+    p.queueCount = count;
+    return p;
+}
+} // namespace
+
 TEST_SUITE_BEGIN("DeviceQueueSelection");
 
 TEST_CASE("FindUnifiedFamily: unified GPU (RADV/NV/ANV) - family 0 in both") {
@@ -52,17 +64,12 @@ TEST_CASE("FindUnifiedFamily: both empty returns UINT32_MAX") {
 }
 
 TEST_CASE("FindGraphicsFamilies: keeps only families with the graphics bit, in order") {
-    auto fam = [](VkQueueFlags f) {
-        VkQueueFamilyProperties p {};
-        p.queueFlags = f;
-        return p;
-    };
     std::vector<VkQueueFamilyProperties> props {
-        fam(VK_QUEUE_COMPUTE_BIT),
-        fam(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT),
-        fam(VK_QUEUE_TRANSFER_BIT),
-        fam(VK_QUEUE_GRAPHICS_BIT),
-        fam(0),
+        Family(VK_QUEUE_COMPUTE_BIT),
+        Family(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT),
+        Family(VK_QUEUE_TRANSFER_BIT),
+        Family(VK_QUEUE_GRAPHICS_BIT),
+        Family(0),
     };
     CHECK(FindGraphicsFamilies(props) == std::vector<uint32_t> { 1, 3 });
     CHECK(FindGraphicsFamilies({}).empty());
@@ -127,14 +134,12 @@ bool gpuAcceptedWithFamilies(std::vector<VkQueueFamilyProperties> families) {
 
 TEST_SUITE("Device::CheckGPU queue families") {
     TEST_CASE("a GPU whose only queue family cannot do graphics is rejected") {
-        CHECK_FALSE(gpuAcceptedWithFamilies(
-            { { .queueFlags = VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, .queueCount = 1 } }));
+        CHECK_FALSE(
+            gpuAcceptedWithFamilies({ Family(VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, 1) }));
     }
     TEST_CASE("a GPU with a graphics family is accepted, wherever in the list it sits") {
-        const VkQueueFamilyProperties graphics { .queueFlags = VK_QUEUE_GRAPHICS_BIT,
-                                                 .queueCount = 1 };
-        const VkQueueFamilyProperties transfer { .queueFlags = VK_QUEUE_TRANSFER_BIT,
-                                                 .queueCount = 1 };
+        const auto graphics = Family(VK_QUEUE_GRAPHICS_BIT, 1);
+        const auto transfer = Family(VK_QUEUE_TRANSFER_BIT, 1);
         CHECK(gpuAcceptedWithFamilies({ graphics }));
         CHECK(gpuAcceptedWithFamilies({ transfer, graphics }));
     }
