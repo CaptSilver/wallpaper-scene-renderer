@@ -543,6 +543,9 @@ inline std::string GetCachePath(std::string_view scene_id, std::string_view file
     return std::string("/cache/") + std::string(scene_id) + "/" SHADER_DIR "/" +
            std::string(filename) + "." SHADER_SUFFIX;
 }
+inline std::string GetPreprocessCachePath(std::string_view scene_id, std::string_view key) {
+    return std::string("/cache/") + std::string(scene_id) + "/pp01/" + std::string(key) + ".pp";
+}
 
 // Read one SPV cache entry.  Everything here is validated: the cache file may
 // be truncated (disk full, a crash mid-write, a half-synced ostree deploy) and
@@ -1012,18 +1015,34 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         // Fragment units also pick up the HLSL clip()-statement rewrite so the
         // volumetric-fog shader family (and any other material that ships HLSL
         // clip()) translates cleanly.
+        //
+        // Translation and preprocessing depend only on the unit's stage and source,
+        // the combos and the translator, so their output is cached too: with a warm
+        // SPV cache they take ~10 ms per shader and are most of a scene's load time.
+        const bool use_cache = vfs.IsMounted("cache");
         for (auto& unit : units) {
+            std::string pp_path;
+            if (use_cache) {
+                pp_path =
+                    GetPreprocessCachePath(scene_id, PreprocessCacheKey(unit, shader_info->combos));
+                if (vfs.Contains(pp_path)) {
+                    auto file = vfs.Open(pp_path);
+                    if (file && LoadPreprocessedUnit(*file, unit)) continue;
+                }
+            }
+
             if (unit.stage == ShaderType::GEOMETRY) {
                 unit.src = TranslateGeometryShader(unit.src);
             } else if (unit.stage == ShaderType::FRAGMENT) {
                 unit.src = TranslateHlslClip(unit.src);
             }
-        }
-
-        std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
             unit.src =
                 Preprocessor(unit.src, unit.stage, shader_info->combos, unit.preprocess_info);
-        });
+
+            if (use_cache) {
+                if (auto file = vfs.OpenW(pp_path); file) SavePreprocessedUnit(unit, *file);
+            }
+        }
     }
 
     // Post-preprocessing: inject GS layout declarations with evaluated max_vertices.
@@ -1174,5 +1193,80 @@ std::string ShaderCacheKey(std::span<const WPShaderUnit> units, std::string_view
     }
     shas += salt;
     return utils::genSha1(shas);
+}
+
+std::string PreprocessCacheKey(const WPShaderUnit& unit, const Combos& combos,
+                               std::string_view salt) {
+    std::string key = std::to_string((int)unit.stage) + "\n" + utils::genSha1(unit.src) + "\n";
+    for (const auto& [name, value] : combos) {
+        key += name + "=" + value + "\n";
+    }
+    key += salt;
+    return utils::genSha1(key);
+}
+
+namespace
+{
+constexpr u32 kPreprocessCacheMagic = 0x31305050; // "PP01"
+
+void WriteString(fs::IBinaryStreamW& file, std::string_view str) {
+    file.WriteUint32((u32)str.size());
+    file.Write(str.data(), str.size());
+}
+
+bool ReadString(fs::IBinaryStream& file, std::string& out) {
+    const u32 size = file.ReadUint32();
+    if (! CountFitsStream(file, size)) return false;
+    out.resize(size);
+    return size == 0 || file.Read(out.data(), size) == size;
+}
+
+void WriteMap(fs::IBinaryStreamW& file, const Map<std::string, std::string>& map) {
+    file.WriteUint32((u32)map.size());
+    for (const auto& [key, value] : map) {
+        WriteString(file, key);
+        WriteString(file, value);
+    }
+}
+
+bool ReadMap(fs::IBinaryStream& file, Map<std::string, std::string>& out) {
+    const u32 count = file.ReadUint32();
+    if (! CountFitsStream(file, count, 8)) return false; // two string lengths per entry
+    for (u32 i = 0; i < count; i++) {
+        std::string key, value;
+        if (! ReadString(file, key) || ! ReadString(file, value)) return false;
+        out[key] = value;
+    }
+    return true;
+}
+} // namespace
+
+void SavePreprocessedUnit(const WPShaderUnit& unit, fs::IBinaryStreamW& file) {
+    file.WriteUint32(kPreprocessCacheMagic);
+    WriteString(file, unit.src);
+    WriteMap(file, unit.preprocess_info.input);
+    WriteMap(file, unit.preprocess_info.output);
+    file.WriteUint32((u32)unit.preprocess_info.active_tex_slots.size());
+    for (uint slot : unit.preprocess_info.active_tex_slots) file.WriteUint32(slot);
+    // Written last, so a file cut short anywhere reads as a miss.
+    file.WriteUint32(kPreprocessCacheMagic);
+}
+
+bool LoadPreprocessedUnit(fs::IBinaryStream& file, WPShaderUnit& unit) {
+    if (file.ReadUint32() != kPreprocessCacheMagic) return false;
+
+    std::string        src;
+    WPPreprocessorInfo info;
+    if (! ReadString(file, src)) return false;
+    if (! ReadMap(file, info.input) || ! ReadMap(file, info.output)) return false;
+
+    const u32 slots = file.ReadUint32();
+    if (! CountFitsStream(file, slots, 4)) return false;
+    for (u32 i = 0; i < slots; i++) info.active_tex_slots.insert(file.ReadUint32());
+
+    if (file.ReadUint32() != kPreprocessCacheMagic) return false;
+    unit.src             = std::move(src);
+    unit.preprocess_info = std::move(info);
+    return true;
 }
 } // namespace wallpaper

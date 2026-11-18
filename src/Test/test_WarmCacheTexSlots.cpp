@@ -53,13 +53,14 @@ std::vector<WPShaderUnit> MakeUnits() {
     return units;
 }
 
-// Count regular files anywhere under `dir`.  Used to prove the cold run actually
-// compiled + wrote a cache entry (so the warm run truly hits the disk cache).
-size_t CountFilesRec(const std::string& dir) {
+// Count regular files anywhere under `dir`, optionally only those ending in
+// `suffix`.  Used to prove the cold run actually compiled + wrote a cache entry
+// (so the warm run truly hits the disk cache).
+size_t CountFilesRec(const std::string& dir, std::string_view suffix = {}) {
     size_t n = 0;
     if (! std::filesystem::exists(dir)) return 0;
     for (auto& e : std::filesystem::recursive_directory_iterator(dir))
-        if (e.is_regular_file()) ++n;
+        if (e.is_regular_file() && e.path().string().ends_with(suffix)) ++n;
     return n;
 }
 } // namespace
@@ -266,8 +267,9 @@ TEST_CASE("two materials sharing one shader source both receive SPV from one com
     CHECK_FALSE(a->codes.empty());
     CHECK_FALSE(b->codes.empty());
     CHECK(a->codes == b->codes);
-    // One disk entry for the shared sha1 — the compile ran once.
-    CHECK(CountFilesRec(cache.dir) == 1);
+    // One SPV entry for the shared sha1 — the compile ran once.  (The cache dir
+    // also holds the preprocessed-source entries, so count .spvs files only.)
+    CHECK(CountFilesRec(cache.dir, ".spvs") == 1);
 }
 
 // ---------------------------------------------------------------------------

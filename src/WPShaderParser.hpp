@@ -12,6 +12,8 @@ namespace wallpaper
 namespace fs
 {
 class VFS;
+class IBinaryStream;
+class IBinaryStreamW;
 }
 using Combos = Map<std::string, std::string>;
 
@@ -55,6 +57,17 @@ std::string_view ShaderTranslatorFingerprint();
 // produced it; a different salt never reuses another translator's entry.
 std::string ShaderCacheKey(std::span<const WPShaderUnit> units,
                            std::string_view              salt = ShaderTranslatorFingerprint());
+
+// Key of a preprocessed-source cache entry: one unit's stage and source before
+// translation, the combos it is preprocessed with, and the same translator salt
+// as ShaderCacheKey.
+std::string PreprocessCacheKey(const WPShaderUnit& unit, const Combos& combos,
+                               std::string_view salt = ShaderTranslatorFingerprint());
+
+// A preprocessed unit (its source and preprocess_info) on disk.  Load returns
+// false, and leaves `unit` unchanged, for anything it cannot read in full.
+void SavePreprocessedUnit(const WPShaderUnit& unit, fs::IBinaryStreamW& file);
+bool LoadPreprocessedUnit(fs::IBinaryStream& file, WPShaderUnit& unit);
 
 class WPShaderParser {
 public:
