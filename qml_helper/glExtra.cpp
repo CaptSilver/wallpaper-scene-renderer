@@ -1,6 +1,7 @@
 #include "glExtra.hpp"
 #include "Swapchain/ExFd.hpp"
 #include <glad/glad.h>
+#include <unordered_map>
 #include <vector>
 #include "Utils/Logging.h"
 
@@ -44,6 +45,9 @@ class GlExtra::impl {
 public:
     bool                                       test;
     std::array<std::uint8_t, GL_UUID_SIZE_EXT> uuid;
+    // Memory object backing each texture made by genExTexture().  It keeps the imported Vulkan
+    // allocation alive even after the texture is gone, so deleteTexture() frees it as well.
+    std::unordered_map<uint, uint> tex_memory;
 };
 
 GlExtra::GlExtra(): pImpl(std::make_unique<impl>()) {}
@@ -248,6 +252,7 @@ uint GlExtra::genExTexture(ExHandle& handle) {
 
     glBindTexture(GL_TEXTURE_2D, 0);
     handle.fd = -1;
+    pImpl->tex_memory[tex] = memobject;
 
     // Switch back to Plasma context
     if (prev_ctx && prev_surface) {
@@ -300,4 +305,12 @@ void GlExtra::deleteSemaphore(uint sem) {
 void GlExtra::deleteTexture(uint tex) {
     glDeleteTextures(1, &tex);
     CHECK_GL_ERROR_IF_DEBUG();
+
+    // Texture first, then its memory object: EXT_memory_object does not promise that a
+    // texture's storage outlives the memory object it was created from.
+    if (auto it = pImpl->tex_memory.find(tex); it != pImpl->tex_memory.end()) {
+        glDeleteMemoryObjectsEXT(1, &it->second);
+        CHECK_GL_ERROR_IF_DEBUG();
+        pImpl->tex_memory.erase(it);
+    }
 }
