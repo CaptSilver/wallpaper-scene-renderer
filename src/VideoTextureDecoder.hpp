@@ -89,4 +89,18 @@ protected:
     bool loadFile(const std::string& path);
 };
 
+/// Pauses every decoder in `entries` that is still playing; returns how many
+/// it paused.  `entries` is any range whose elements carry a `decoder`
+/// pointer; null ones are skipped.
+template<typename Entries>
+int pausePlayingVideoDecoders(const Entries& entries) {
+    int paused = 0;
+    for (const auto& entry : entries) {
+        if (! entry.decoder || ! entry.decoder->isPlaying()) continue;
+        entry.decoder->pause();
+        ++paused;
+    }
+    return paused;
+}
+
 } // namespace wallpaper

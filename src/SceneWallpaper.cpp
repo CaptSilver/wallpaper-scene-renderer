@@ -766,10 +766,16 @@ private:
     MHANDLER_CMD(STOP) {
         bool stop { false };
         if (msg->findBool("value", &stop)) {
-            if (stop)
+            if (stop) {
                 frame_timer.Stop();
-            else
+                // Video textures are paused and resumed from DRAW, and no DRAW
+                // comes once the timer has stopped.  Pause them here, or mpv
+                // keeps decoding a wallpaper that is not being drawn.  The
+                // first DRAW after Run() resumes the visible ones.
+                pausePlayingVideoDecoders(m_video_decoders);
+            } else {
                 frame_timer.Run();
+            }
         }
     }
     MHANDLER_CMD(DRAW) {
