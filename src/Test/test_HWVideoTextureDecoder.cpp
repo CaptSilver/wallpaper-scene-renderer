@@ -174,3 +174,90 @@ TEST_SUITE("HWVideoTextureDecoder GPU buffer lifetime") {
         CHECK(countDmaBufFds() == before);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render node order
+//
+// initEGL takes the first node that brings up EGL.  Which one that is decides
+// whether hardware decoding works at all: on a laptop with an integrated GPU
+// and an NVIDIA card the directory can list the NVIDIA node first, where
+// VA-API never initializes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_SUITE("HWVideoTextureDecoder render node order") {
+    TEST_CASE("the NVIDIA node goes after one that can do VA-API") {
+        std::vector<HwDecodeRenderNode> nodes {
+            { "/dev/dri/renderD128", "nvidia" },
+            { "/dev/dri/renderD129", "i915" },
+        };
+        sortHwDecodeRenderNodes(nodes);
+        REQUIRE(nodes.size() == 2);
+        CHECK(nodes[0].driver == "i915");
+        CHECK(nodes[1].driver == "nvidia");
+    }
+
+    TEST_CASE("nodes are tried by name, not in the order the directory lists them") {
+        std::vector<HwDecodeRenderNode> nodes {
+            { "/dev/dri/renderD130", "amdgpu" },
+            { "/dev/dri/renderD128", "i915" },
+            { "/dev/dri/renderD129", "" },
+        };
+        sortHwDecodeRenderNodes(nodes);
+        REQUIRE(nodes.size() == 3);
+        CHECK(nodes[0].path.filename() == "renderD128");
+        CHECK(nodes[1].path.filename() == "renderD129");
+        CHECK(nodes[2].path.filename() == "renderD130");
+    }
+
+    TEST_CASE("a node with an unknown driver still goes before NVIDIA") {
+        std::vector<HwDecodeRenderNode> nodes {
+            { "/dev/dri/renderD128", "nvidia" },
+            { "/dev/dri/renderD129", "" },
+        };
+        sortHwDecodeRenderNodes(nodes);
+        CHECK(nodes[0].path.filename() == "renderD129");
+        CHECK(nodes[1].path.filename() == "renderD128");
+    }
+
+    TEST_CASE("NVIDIA alone is still tried") {
+        std::vector<HwDecodeRenderNode> nodes { { "/dev/dri/renderD128", "nvidia" } };
+        sortHwDecodeRenderNodes(nodes);
+        REQUIRE(nodes.size() == 1);
+        CHECK(nodes[0].driver == "nvidia");
+    }
+
+    TEST_CASE("hwDecodeKernelDriver reads the driver link under sysfs") {
+        fs::path sys    = makeTempDir("sys");
+        fs::path device = sys / "dev" / "char" / "226:129" / "device";
+        fs::create_directories(device);
+        // The link target need not exist; only its last component is read.
+        fs::create_symlink("../../../bus/pci/drivers/nvidia", device / "driver");
+
+        CHECK(hwDecodeKernelDriver(226, 129, sys) == "nvidia");
+        CHECK(hwDecodeKernelDriver(226, 128, sys).empty());
+
+        fs::remove_all(sys);
+    }
+
+    TEST_CASE("listHwDecodeRenderNodes keeps renderD* only, in name order") {
+        fs::path tmp = makeTempDir("list");
+        for (const char* name : { "renderD129", "card0", "renderD128", "by-path" }) {
+            std::ofstream f(tmp / name);
+            f << "fake";
+        }
+
+        const auto nodes = listHwDecodeRenderNodes(tmp);
+        REQUIRE(nodes.size() == 2);
+        CHECK(nodes[0].path.filename() == "renderD128");
+        CHECK(nodes[1].path.filename() == "renderD129");
+        // Plain files, not device nodes: no driver to report.
+        CHECK(nodes[0].driver.empty());
+        CHECK(nodes[1].driver.empty());
+
+        fs::remove_all(tmp);
+    }
+
+    TEST_CASE("listHwDecodeRenderNodes on a missing directory is empty") {
+        CHECK(listHwDecodeRenderNodes("/var/empty/wekde-no-such-dri").empty());
+    }
+}

@@ -15,7 +15,10 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
+#include <algorithm>
 #include <filesystem>
 
 namespace wallpaper
@@ -47,6 +50,42 @@ static const char* eglErrorString(EGLint err) {
     case EGL_CONTEXT_LOST: return "EGL_CONTEXT_LOST";
     default: return "EGL_UNKNOWN";
     }
+}
+
+std::string hwDecodeKernelDriver(unsigned int devMajor, unsigned int devMinor,
+                                 const std::filesystem::path& sysRoot) {
+    const auto      link = sysRoot / "dev" / "char" /
+                           (std::to_string(devMajor) + ":" + std::to_string(devMinor)) / "device" /
+                           "driver";
+    std::error_code ec;
+    const auto      target = std::filesystem::read_symlink(link, ec);
+    if (ec) return {};
+    return target.filename().string();
+}
+
+void sortHwDecodeRenderNodes(std::vector<HwDecodeRenderNode>& nodes) {
+    std::sort(nodes.begin(), nodes.end(), [](const auto& a, const auto& b) {
+        const bool aNvidia = a.driver == "nvidia";
+        const bool bNvidia = b.driver == "nvidia";
+        if (aNvidia != bNvidia) return bNvidia;
+        return a.path.filename() < b.path.filename();
+    });
+}
+
+std::vector<HwDecodeRenderNode> listHwDecodeRenderNodes(const std::filesystem::path& driRoot,
+                                                        const std::filesystem::path& sysRoot) {
+    std::vector<HwDecodeRenderNode> nodes;
+    std::error_code                 ec;
+    for (const auto& entry : std::filesystem::directory_iterator(driRoot, ec)) {
+        if (entry.path().filename().string().find("renderD") != 0) continue;
+        HwDecodeRenderNode node { entry.path(), {} };
+        struct stat        st {};
+        if (::stat(entry.path().c_str(), &st) == 0 && S_ISCHR(st.st_mode))
+            node.driver = hwDecodeKernelDriver(major(st.st_rdev), minor(st.st_rdev), sysRoot);
+        nodes.push_back(std::move(node));
+    }
+    sortHwDecodeRenderNodes(nodes);
+    return nodes;
 }
 
 HWVideoTextureDecoder::HWVideoTextureDecoder(int width, int height)
@@ -83,14 +122,14 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
         return false;
     }
 
-    for (const auto& entry : std::filesystem::directory_iterator(driRoot)) {
-        std::string name = entry.path().filename().string();
-        if (name.find("renderD") != 0) continue;
-
-        int fd = ::open(entry.path().c_str(), O_RDWR | O_CLOEXEC);
+    // Sorted, not in directory order: with an integrated GPU and an NVIDIA card
+    // the directory can list the NVIDIA node first, and VA-API never comes up
+    // there.
+    for (const auto& node : listHwDecodeRenderNodes(driRoot)) {
+        int fd = ::open(node.path.c_str(), O_RDWR | O_CLOEXEC);
         if (fd < 0) {
             LOG_INFO("HWVideoTextureDecoder: skipped %s: open() failed (%s)",
-                     entry.path().c_str(),
+                     node.path.c_str(),
                      std::strerror(errno));
             continue;
         }
@@ -98,7 +137,7 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
         struct gbm_device* gbm = gbm_create_device(fd);
         if (! gbm) {
             LOG_INFO("HWVideoTextureDecoder: skipped %s: gbm_create_device returned null",
-                     entry.path().c_str());
+                     node.path.c_str());
             ::close(fd);
             continue;
         }
@@ -107,7 +146,7 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
         if (display == EGL_NO_DISPLAY) {
             LOG_INFO("HWVideoTextureDecoder: skipped %s: eglGetPlatformDisplay returned "
                      "NO_DISPLAY (%s)",
-                     entry.path().c_str(),
+                     node.path.c_str(),
                      eglErrorString(eglGetError()));
             gbm_device_destroy(gbm);
             ::close(fd);
@@ -117,7 +156,7 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
         EGLint major, minor;
         if (! eglInitialize(display, &major, &minor)) {
             LOG_INFO("HWVideoTextureDecoder: skipped %s: eglInitialize failed (%s)",
-                     entry.path().c_str(),
+                     node.path.c_str(),
                      eglErrorString(eglGetError()));
             gbm_device_destroy(gbm);
             ::close(fd);
@@ -133,7 +172,7 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
 
         if (numConfigs == 0) {
             LOG_INFO("HWVideoTextureDecoder: skipped %s: eglChooseConfig returned 0 configs (%s)",
-                     entry.path().c_str(),
+                     node.path.c_str(),
                      eglErrorString(eglGetError()));
             eglTerminate(display);
             gbm_device_destroy(gbm);
@@ -147,7 +186,7 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
         EGLContext ctx = eglCreateContext(display, config, EGL_NO_CONTEXT, ctxAttribs);
         if (ctx == EGL_NO_CONTEXT) {
             LOG_INFO("HWVideoTextureDecoder: skipped %s: eglCreateContext failed (%s)",
-                     entry.path().c_str(),
+                     node.path.c_str(),
                      eglErrorString(eglGetError()));
             eglTerminate(display);
             gbm_device_destroy(gbm);
@@ -157,7 +196,7 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
 
         if (! eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) {
             LOG_INFO("HWVideoTextureDecoder: skipped %s: eglMakeCurrent failed (%s)",
-                     entry.path().c_str(),
+                     node.path.c_str(),
                      eglErrorString(eglGetError()));
             eglDestroyContext(display, ctx);
             eglTerminate(display);
@@ -171,8 +210,8 @@ bool HWVideoTextureDecoder::initEGL(std::string* outError) {
         m_eglContext = ctx;
         m_gbmDevice  = gbm;
         m_drmFd      = fd;
-        LOG_INFO(
-            "HWVideoTextureDecoder: EGL %d.%d on %s (GBM)", major, minor, entry.path().c_str());
+        m_nodePath   = node.path.string();
+        LOG_INFO("HWVideoTextureDecoder: EGL %d.%d on %s (GBM)", major, minor, node.path.c_str());
         return true;
     }
 
@@ -210,6 +249,10 @@ void HWVideoTextureDecoder::cleanupEGL() {
     if (m_gbmDevice) {
         gbm_device_destroy(m_gbmDevice);
         m_gbmDevice = nullptr;
+    }
+    if (m_vaFd >= 0) {
+        ::close(m_vaFd);
+        m_vaFd = -1;
     }
     if (m_drmFd >= 0) {
         ::close(m_drmFd);
@@ -261,7 +304,12 @@ bool HWVideoTextureDecoder::open(const std::string& path, std::string* outError)
     drm_params.fd           = -1;
     drm_params.crtc_id      = -1;
     drm_params.connector_id = -1;
-    drm_params.render_fd    = m_drmFd; // render node for VA-API interop
+    // VA-API gets its own open of the render node rather than the fd GBM/EGL
+    // already runs on.  Sharing the one fd breaks decoding with Mesa iris +
+    // intel-media-driver: every picture fails in vaEndPicture
+    // (VA_STATUS_ERROR_DECODING_ERROR) and mpv drops to software decoding.
+    m_vaFd               = ::open(m_nodePath.c_str(), O_RDWR | O_CLOEXEC);
+    drm_params.render_fd = m_vaFd >= 0 ? m_vaFd : m_drmFd;
 
     mpv_render_param params[] = {
         { MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL) },
@@ -282,8 +330,10 @@ bool HWVideoTextureDecoder::open(const std::string& path, std::string* outError)
 
     mpv_render_context_set_update_callback(m_renderCtx, onMpvRenderUpdate, this);
 
-    // Force VA-API hwdec now that GL context is available
-    mpv_set_property_string(m_mpv, "hwdec", "vaapi");
+    // Hardware decoding now that the GL context is available: VA-API, or nvdec
+    // where the node belongs to the NVIDIA driver, which has no VA-API.  A
+    // libmpv too old for a list rejects the value and keeps initMpv's "vaapi".
+    mpv_set_property_string(m_mpv, "hwdec", "vaapi,nvdec");
 
     loadFile(path);
 
