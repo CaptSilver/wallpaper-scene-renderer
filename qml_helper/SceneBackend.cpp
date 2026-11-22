@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "Swapchain/ExFd.hpp"
 #include "Swapchain/ExInteropSync.hpp"
 #include "SceneGraphApi.hpp"
 #include "Scene/RenderExtent.h"
@@ -298,10 +299,21 @@ public slots:
         wallpaper::ExHandle* exh =
             m_scene->exSwapchain()->eatFrame([this](wallpaper::ExHandle* outgoing) {
                 if (uint release = exSyncFor(*outgoing).release)
-                    m_glex.signalSemaphore(release, glTextureOf(outgoing->id()));
+                    m_glex.signalSemaphore(release, glTextureOf(*outgoing));
             });
         if (exh != nullptr) {
             int id = exh->id();
+            // A handle that still holds its fd has not been imported.  If its id is
+            // already mapped, the renderer rebuilt its swapchain (device-lost
+            // recovery, an HDR switch) and reused the id for a new image: the
+            // mapped texture is the old image, which nothing renders into any more.
+            QSGTexture* replaced = nullptr;
+            if (auto found = texs_map.find(id);
+                found != texs_map.end() && wallpaper::HoldsFd(exh->fd)) {
+                m_glex.deleteTexture(found->second.gltex);
+                replaced = found->second.qsg;
+                texs_map.erase(found);
+            }
             if (texs_map.count(id) == 0) {
                 _Q_INFO("receive external texture(%dx%d) from fd: %d",
                         exh->width,
@@ -330,6 +342,8 @@ public slots:
                 m_texture = m_init_texture;
 
             setTexture(m_texture);
+            // Only once the node points at the new texture.
+            delete replaced;
             markDirty(DirtyMaterial);
             Q_EMIT textureInUse();
 
@@ -371,14 +385,27 @@ private:
 
     ExSync& exSyncFor(wallpaper::ExHandle& handle) {
         auto [it, inserted] = m_ex_sync.try_emplace(handle.id());
+        // Semaphore fds still on a handle whose id is already imported belong to a
+        // rebuilt swapchain.  The old imports signal and wait on the replaced
+        // swapchain's semaphores, so the renderer would wait forever on the new
+        // release: swap them for the new ones.
+        if (! inserted &&
+            (wallpaper::HoldsFd(handle.render_done_fd) || wallpaper::HoldsFd(handle.release_fd))) {
+            m_glex.deleteSemaphore(it->second.render_done);
+            m_glex.deleteSemaphore(it->second.release);
+            inserted = true;
+        }
         if (inserted) {
             it->second.render_done = m_glex.importSemaphore(handle.render_done_fd);
             it->second.release     = m_glex.importSemaphore(handle.release_fd);
         }
         return it->second;
     }
-    uint glTextureOf(int id) const {
-        auto it = texs_map.find(id);
+    // 0 for an image never imported here, including a rebuilt swapchain's image
+    // whose id still maps to the one it replaced.
+    uint glTextureOf(const wallpaper::ExHandle& handle) const {
+        if (wallpaper::HoldsFd(handle.fd)) return 0;
+        auto it = texs_map.find(handle.id());
         return it == texs_map.end() ? 0 : it->second.gltex;
     }
 

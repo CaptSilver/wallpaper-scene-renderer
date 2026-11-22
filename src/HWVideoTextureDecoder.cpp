@@ -21,7 +21,17 @@
 namespace wallpaper
 {
 
+// libmpv 0.40.0-0.41.x (mpv-player/mpv#17217, fixed upstream by f74adc424) end every
+// mpv_render_context_render() in a glFenceSync that nothing ever deletes: one leaked driver
+// object per decoded video frame for as long as the decoder lives.  mpv skips a null fence, so
+// hand it a glFenceSync that creates none; it has to be a real function, because mpv refuses to
+// initialise a GL 3.2+ context without one.  mpv's only other fence user is direct rendering into
+// persistently mapped buffers, which needs MPV_RENDER_PARAM_ADVANCED_CONTROL: never pass that
+// while this stub is in place.
+static GLsync GLAPIENTRY noFenceSync(GLenum, GLbitfield) { return nullptr; }
+
 static void* eglGetProcAddressWrapper(void*, const char* name) {
+    if (std::strcmp(name, "glFenceSync") == 0) return (void*)&noFenceSync;
     return (void*)eglGetProcAddress(name);
 }
 
@@ -263,6 +273,7 @@ bool HWVideoTextureDecoder::open(const std::string& path, std::string* outError)
     drm_params.connector_id = -1;
     drm_params.render_fd    = m_drmFd; // render node for VA-API interop
 
+    // No MPV_RENDER_PARAM_ADVANCED_CONTROL here: noFenceSync depends on its absence.
     mpv_render_param params[] = {
         { MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL) },
         { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params },

@@ -62,7 +62,10 @@
 
 using namespace wallpaper::vulkan;
 
-constexpr uint64_t vk_wait_time { 10u * 1000u * 1000000u };
+// 10 s per fence wait (see FenceWaitRetry.hpp).  The arithmetic has to be 64-bit: in unsigned
+// int it wraps to 1.41 s, which promoted any 4.2 s stall to device-lost.
+constexpr uint64_t vk_wait_time { 10ull * 1000u * 1000000u };
+static_assert(vk_wait_time == 10'000'000'000ull);
 // 2 frames in flight: lets CPU record frame N+1 while GPU executes frame N,
 // collapsing drawFrame wallclock from (CPU + GPU) to max(CPU, GPU) at
 // steady state.  Per-slot resources: command buffer, fence, semaphore pair,
