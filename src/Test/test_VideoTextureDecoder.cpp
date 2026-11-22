@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 #include <chrono>
 
 using namespace wallpaper;
@@ -433,5 +434,79 @@ TEST_SUITE("VideoTextureDecoder::open (gated on WEKDE_HAS_VIDEO)") {
             // race path the R4 audit flagged.
         }
         CHECK(true);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// pausePlayingVideoDecoders
+//
+// A paused wallpaper stops drawing, and the draw loop is the only other place
+// that pauses a video texture.  The STOP handler calls this so mpv does not
+// keep decoding behind a wallpaper that shows nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace
+{
+class PauseCountingDecoder : public VideoTextureDecoder {
+public:
+    using VideoTextureDecoder::VideoTextureDecoder;
+
+    // No mpv handle in these cases: track the state the real play()/pause()
+    // would leave behind, and count the pause() calls.
+    void play() override { m_playing.store(true); }
+    void pause() override {
+        ++pauses;
+        m_playing.store(false);
+    }
+
+    int pauses { 0 };
+};
+
+struct DecoderEntry {
+    std::shared_ptr<VideoTextureDecoder> decoder;
+};
+} // namespace
+
+TEST_SUITE("pausePlayingVideoDecoders") {
+    TEST_CASE("pauses every decoder that is playing") {
+        auto a = std::make_shared<PauseCountingDecoder>(8, 8);
+        auto b = std::make_shared<PauseCountingDecoder>(8, 8);
+        a->play();
+        b->play();
+        std::vector<DecoderEntry> entries { { a }, { b } };
+
+        CHECK(pausePlayingVideoDecoders(entries) == 2);
+        CHECK(a->isPlaying() == false);
+        CHECK(b->isPlaying() == false);
+        CHECK(a->pauses == 1);
+        CHECK(b->pauses == 1);
+    }
+
+    TEST_CASE("leaves an already paused decoder alone") {
+        auto playing = std::make_shared<PauseCountingDecoder>(8, 8);
+        auto idle    = std::make_shared<PauseCountingDecoder>(8, 8);
+        playing->play();
+        std::vector<DecoderEntry> entries { { idle }, { playing } };
+
+        CHECK(pausePlayingVideoDecoders(entries) == 1);
+        CHECK(idle->pauses == 0);
+        CHECK(playing->pauses == 1);
+
+        // Nothing left to pause on a second STOP.
+        CHECK(pausePlayingVideoDecoders(entries) == 0);
+        CHECK(playing->pauses == 1);
+    }
+
+    TEST_CASE("skips entries without a decoder") {
+        auto playing = std::make_shared<PauseCountingDecoder>(8, 8);
+        playing->play();
+        std::vector<DecoderEntry> entries { { nullptr }, { playing }, { nullptr } };
+
+        CHECK(pausePlayingVideoDecoders(entries) == 1);
+        CHECK(playing->isPlaying() == false);
+    }
+
+    TEST_CASE("an empty list pauses nothing") {
+        std::vector<DecoderEntry> entries;
+        CHECK(pausePlayingVideoDecoders(entries) == 0);
     }
 }
